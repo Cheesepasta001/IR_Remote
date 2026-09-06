@@ -1,0 +1,5 @@
+# Obsidian 
+.obsidian/
+
+# Environment file
+.env
