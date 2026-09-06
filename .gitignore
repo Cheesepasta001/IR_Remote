@@ -3,3 +3,7 @@
 
 # Environment file
 .env
+secret.h
+
+# VSCode Setting
+.vscode/
