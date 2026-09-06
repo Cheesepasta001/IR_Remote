@@ -78,12 +78,14 @@ void setup() {
 void loop() {
   //IR Transmitter
   if (enableIR){
+    Serial.write("Sending Power Signal...");
     irsend.sendNEC(POWER_CODE, MY_BIT);
     enableIR=false;
   }
 
-  // Connect to MQTT server
+  // Connect to MQTT server if disconnected
   if (!client.connected()){
+    Serial.write("Server got disconnected!");
     reconnect();
   }
 
