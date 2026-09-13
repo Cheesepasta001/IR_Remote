@@ -50,32 +50,26 @@ void sendHttpResponse(int statusCode = 404, int instanceCode = 1) {
         client.println("HTTP/1.1 404 Not Found");
     else if (statusCode == 500)
         client.println("HTTP/1.1 500 Internal Server Error");
-
-    client.stop();
 }
 
 void powerButton (){
   Serial.println("Sending Power Signal...");
   irsend.sendNEC(POWER_CODE, MY_BIT);
-  socketSuccessHandler(POWER);
 }
 
 void lowTempButton(){
   Serial.println("Sending Power Signal...");
   irsend.sendNEC(LOW_TEMP_CODE, MY_BIT);
-  socketSuccessHandler(LOW_TEMP);
 }
 
-int highTempButton(){
+void highTempButton(){
   Serial.println("Sending Power Signal...");
   irsend.sendNEC(HIGH_TEMP_CODE, MY_BIT);
-  socketSuccessHandler(HIGH_TEMP);
 }
 
-int silentButton(){
+void silentButton(){
   Serial.println("Sending Power Signal...");
   irsend.sendNEC(SILENT_CODE, MY_BIT);
-  socketSuccessHandler(SILENT);
 }
 
 void setup() {
@@ -86,7 +80,6 @@ void setup() {
 
   Serial.print("Connecting to WIFI");
   while (WiFi.status() != WL_CONNECTED) {
-    sendHttpResponse(500);
     delay(500);
     Serial.print(".");
   }
@@ -108,29 +101,38 @@ void loop() {
     while (client.connected()) {    // loop while the client's connected
       if (client.available()) {     // if there's bytes to read from the client,
         char c = client.read();     // read a byte, then
-        Serial.println(c);            // print it out the serial monitor
+        Serial.print(c);            // print it out the serial monitor
         
         if (c != '\r') {  // if you got anything else but a carriage return character,
           currentLine += c;      // add it to the end of the currentLine
         }
+        if (c == '\n') {
+          if (currentLine.startsWith("Get ")){
+            // Check to see if the client request is given 
+            if (currentLine.indexOf("GET /Power") >= 0) {
+              powerButton();
+              socketSuccessHandler(POWER);
+            }
+            else if (currentLine.indexOf("GET /Silent") >= 0) {
+              silentButton();
+              socketSuccessHandler(SILENT);
+            }
+            else if (currentLine.indexOf("GET /Low_Temp") >= 0) {
+              lowTempButton();
+              socketSuccessHandler(LOW_TEMP);
+            }
+            else if (currentLine.indexOf("GET /High_Temp") >= 0) {
+              highTempButton();
+              socketSuccessHandler(HIGH_TEMP);
+            }
+            else {
+              sendHttpResponse();
+            }
+
+            break;
+          }
+        }
         
-        // Check to see if the client request is given 
-        if (currentLine.indexOf("GET /Power") >= 0) {
-          powerButton();
-          break;
-        }
-        if (currentLine.indexOf("GET /Silent") >= 0) {
-          silentButton();
-          break;
-        }
-        if (currentLine.indexOf("GET /Low_Temp") >= 0) {
-          lowTempButton();
-          break;
-        }
-        if (currentLine.indexOf("GET /High_Temp") >= 0) {
-          highTempButton();
-          break;
-        }
         
       }
     }
