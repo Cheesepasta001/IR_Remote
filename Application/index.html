@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>IR Remote</title>
+    <link rel="stylesheet" href="/src/ui/styles.css" />
+  </head>
+  <body>
+    <main>
+      <!-- 1. Connection banner -->
+      <section id="banner" class="banner tone-idle">
+        <div class="banner-row">
+          <span id="banner-dot" class="dot"></span>
+          <h1 id="banner-label">Connecting</h1>
+        </div>
+        <p id="banner-detail" class="detail"></p>
+      </section>
+
+      <!-- 2. Current device state, with its age -->
+      <section class="card">
+        <h2>Last confirmed action</h2>
+        <p id="device-label" class="device-label">No command sent yet</p>
+        <p id="device-age" class="age"></p>
+        <p id="device-caveat" class="caveat"></p>
+      </section>
+
+      <!-- 3. Controls -->
+      <section class="card">
+        <h2>Controls</h2>
+        <div id="controls" class="controls"></div>
+        <p class="caveat">
+          Each button fires one IR code. Nothing is retried automatically — a retry
+          would toggle the unit twice.
+        </p>
+      </section>
+
+      <!-- 4. Cancel: visually distinct, always enabled -->
+      <section class="card cancel-card">
+        <button id="cancel" class="cancel">Cancel in-flight request <kbd>Esc</kbd></button>
+        <p class="caveat warn" id="cancel-note"></p>
+      </section>
+
+      <!-- 5. Log pane -->
+      <section class="card">
+        <h2>Log <span class="muted" id="log-count"></span></h2>
+        <div id="log" class="log"></div>
+      </section>
+
+      <!-- 6. Settings -->
+      <section class="card">
+        <h2>Settings</h2>
+        <form id="settings" class="settings">
+          <label>Base URL<input id="base-url" type="text" spellcheck="false" /></label>
+          <label>Poll interval (ms)<input id="poll-interval" type="number" min="100" step="100" /></label>
+          <label>Command timeout (ms)<input id="command-timeout" type="number" min="100" step="100" /></label>
+          <label>Probe timeout (ms)<input id="probe-timeout" type="number" min="100" step="100" /></label>
+          <label>Stale after (ms)<input id="stale-after" type="number" min="500" step="100" /></label>
+          <button type="submit">Apply</button>
+        </form>
+
+        <form id="creds" class="settings">
+          <label>Username<input id="cred-user" type="text" spellcheck="false" autocomplete="off" /></label>
+          <label>Password<input id="cred-pass" type="password" autocomplete="off" /></label>
+          <button type="submit">Save to OS keychain</button>
+          <button type="button" id="cred-clear">Clear</button>
+        </form>
+        <p class="caveat" id="cred-note"></p>
+      </section>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
