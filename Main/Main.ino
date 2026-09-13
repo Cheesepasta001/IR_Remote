@@ -1,53 +1,72 @@
 #include <IRsend.h>
 #include <WiFi.h>
-#include <SPI.h>
-#include <PubSubClient.h>
 #include "secret.h"
 
 const char* ssid = NetworkName;
 const char* password = NetworkPassword;
 
-const uint16_t IR_LED_PIN = 4; // your GPIO
+const uint16_t IR_LED_PIN = 14; // your GPIO
 
 IRsend irsend(IR_LED_PIN);
-
-byte mac[]    = MyMac;
-IPAddress ip(Myip);
-IPAddress server(Myserver);
-
-WiFiClient wifiClient;
-PubSubClient client(wifiClient);
+NetworkServer server(80);
+NetworkClient client;
 
 bool enableIR = true;
+int trial = 0;
 
-void callback(char* topic, byte* payload, unsigned int length) {
-  Serial.print("Message arrived [");
-  Serial.print(topic);
-  Serial.print("] ");
-  for (int i=0;i<length;i++) {
-    Serial.print((char)payload[i]);
+int powerButton (){
+  try{
+    Serial.write("Sending Power Signal...");
+    irsend.sendNEC(POWER_CODE, MY_BIT);
+    client.println("success");
+    return 0;
   }
-  Serial.println();
+  catch(const std::exception& e) {
+        // A fallback catch for any other standard exceptions
+        client.println("fail");
+        return 1;
+  }
 }
 
-void reconnect() {
-  // Loop until we're reconnected
-  while (!client.connected()) {
-    Serial.print("Attempting MQTT connection...");
-    // Attempt to connect
-    if (client.connect("arduinoClient")) {
-      Serial.println("connected");
-      // Once connected, publish an announcement...
-      client.publish("outTopic","hello world");
-      // ... and resubscribe
-      client.subscribe("inTopic");
-    } else {
-      Serial.print("failed, rc=");
-      Serial.print(client.state());
-      Serial.println(" try again in 5 seconds");
-      // Wait 5 seconds before retrying
-      delay(5000);
-    }
+int lowTempButton(){
+  try{
+    Serial.write("Sending Power Signal...");
+    irsend.sendNEC(LOW_TEMP, MY_BIT);
+    client.println("success");
+    return 0;
+  }
+  catch(const std::exception& e) {
+        // A fallback catch for any other standard exceptions
+        client.println("fail");
+        return 1;
+  }
+}
+
+int highTempButton(){
+  try{
+    Serial.write("Sending Power Signal...");
+    irsend.sendNEC(HIGH_TEMP, MY_BIT);
+    client.println("success");
+    return 0;
+  }
+  catch(const std::exception& e) {
+        // A fallback catch for any other standard exceptions
+        client.println("fail");
+        return 1;
+  }
+}
+
+int silentButton(){
+  try{
+    Serial.write("Sending Power Signal...");
+    irsend.sendNEC(SILENT_CODE, MY_BIT);
+    client.println("success");
+    return 0;
+  }
+  catch(const std::exception& e) {
+        // A fallback catch for any other standard exceptions
+        client.println("fail");
+        return 1;
   }
 }
 
@@ -67,29 +86,61 @@ void setup() {
   Serial.print("IP Address: ");
   Serial.println(WiFi.localIP());
 
-  // Connect to MQTT server
-  client.setServer(server, 1883);
-  client.setCallback(callback);
-
-  // IR Initiation
-  irsend.begin();
+  irsend.begin(); // IR Initiation
+  server.begin(); // Server Initiation
 }
 
 void loop() {
-  //IR Transmitter
-  if (enableIR){
-    Serial.write("Sending Power Signal...");
-    irsend.sendNEC(POWER_CODE, MY_BIT);
-    enableIR=false;
-  }
+  client = server.accept();  // listen for incoming clients
 
-  // Connect to MQTT server if disconnected
-  if (!client.connected()){
-    Serial.write("Server got disconnected!");
-    reconnect();
+  if (client) {                     // if you get a client,
+    Serial.println("New Client.");  // print a message out the serial port
+    String currentLine = "";        // make a String to hold incoming data from the client
+    while (client.connected()) {    // loop while the client's connected
+      if (client.available()) {     // if there's bytes to read from the client,
+        char c = client.read();     // read a byte, then
+        Serial.write(c);            // print it out the serial monitor
+        
+        if (c != '\r') {  // if you got anything else but a carriage return character,
+          currentLine += c;      // add it to the end of the currentLine
+        }
+        
+        // Check to see if the client request is given 
+        if (currentLine.endsWith("GET /Power")) {
+          trial = 0;
+          while (trial < 3 && powerButton()){
+            trial++;
+            delay(500);
+          }
+        }
+        if (currentLine.endsWith("GET /Silent")) {
+          trial = 0;
+          while (trial < 3 && silentButton()){
+            trial++;
+            delay(500);
+          }
+        }
+        if (currentLine.endsWith("GET /Low_Temp")) {
+          trial = 0;
+          while (trial < 3 && lowTempButton()){
+            trial++;
+            delay(500);
+          }
+        }
+        if (currentLine.endsWith("GET /High_Temp")) {
+          trial = 0;
+          while (trial < 3 && highTempButton()){
+            trial++;
+            delay(500);
+          }
+        }
+        
+      }
+    }
+    // close the connection:
+    client.stop();
+    Serial.println("Client Disconnected.");
   }
-
-  client.loop();
   
   delay(100);
 }
