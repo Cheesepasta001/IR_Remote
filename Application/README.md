@@ -7,33 +7,89 @@ there is no CORS surface and no credential in the frontend.
 
 ---
 
-## ⚠️ Read this first: the firmware does not implement the documented API
+## ⚠️ Read this first: one firmware change is still needed
 
-`Instruction.md` section 1 describes four endpoints returning `"Success"` or
-`"Fail"` over Basic auth. The firmware in `../Main/Main.ino` does not do that.
+`Main.ino` now serves all four commands (`/Power`, `/Silent`, `/Low_Temp`,
+`/High_Temp`), each firing its own IR code and writing a reply. That is most of
+the way there. One thing still blocks the app.
 
-| `Instruction.md` section 1 | `Main.ino` as it stands |
-|---|---|
-| `/Power`, `/Silent`, `/Low_Temp`, `/High_Temp` | only `GET /Power` is matched |
-| responds `"Success"` / `"Fail"` | **writes no HTTP response at all** |
-| `Content-Type: application/json` | nothing is ever sent to the client |
-| Basic auth | no authentication check anywhere |
-| status codes | none — there is no response |
+**The reply has no HTTP framing.** `client.println("success")` puts exactly this
+on the wire:
 
-The handler fires the IR code and then sits in `while (client.connected())`
-without ever writing. A client gets zero bytes and hangs until its own timeout.
+```
+success\r\n
+```
 
-**Consequence:** with the current firmware, every command times out from the
-app's side *even when the IR code was sent successfully*. Rule 1 forbids showing
-a value the device has not confirmed, and this device confirms nothing.
+No status line, no headers, no blank line. That is the body-only HTTP/0.9 shape,
+and no HTTP client will parse it:
 
-This is why `mock/server.js` exists and why it is the contract of record. The
-agreed shape (see "Contract" below) is what the app is built against; the
-firmware is expected to grow into it. **No firmware change is included here —
-that is out of scope per `Instruction.md` section 5.**
+- `curl` → `Received HTTP/0.9 when not allowed`
+- this app → `Unreachable("error sending request for url …")`
 
-Mock mode `silent` reproduces the current firmware exactly, so you can see what
-the app does against the real device today without leaving your desk.
+So the app still shows **"did not reach the device"** while the IR code fired and
+the device replied `success`. Rule 1 forbids showing a value the device has not
+confirmed, and an unparseable reply is not a confirmation.
+
+### The fix
+
+Firmware is out of scope for this repo per `Instruction.md` section 5, so this is
+written down rather than applied. A `socketHandler()` is being added in
+`Main.ino`; this is the shape the app expects.
+
+```cpp
+void socketHandler(int instance){
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: application/json");
+  client.println("Connection: close");
+  client.println();                    // the blank line is required
+  switch (instance){
+    case 1:  client.println("{\"result\":\"Success\",\"command\":\"Power\"}");     break;
+    case 2:  client.println("{\"result\":\"Success\",\"command\":\"Silent\"}");    break;
+    case 3:  client.println("{\"result\":\"Success\",\"command\":\"High_Temp\"}"); break;
+    case 4:  client.println("{\"result\":\"Success\",\"command\":\"Low_Temp\"}");  break;
+    default: client.println("{\"result\":\"Fail\",\"error\":\"ir send failed\"}"); break;
+  }
+  client.stop();                       // otherwise the socket is never closed
+}
+```
+
+**Every `case` needs its `break`.** Without them C++ falls through and one
+command writes all five bodies in a row, which is not valid JSON. The app
+rejects that as `BadResponse` rather than reading the first "Success" —
+see `a_switch_fallthrough_body_is_rejected`.
+
+Then call it from `loop()` and delete the `client.println("success")` /
+`client.println("fail")` lines inside the button functions, so each request
+produces exactly one reply:
+
+```cpp
+if (currentLine.endsWith("GET /Power")) {
+  socketHandler(powerButton() == 0 ? 1 : 0);
+}
+```
+
+Dropping the `while (trial < 3 && …)` wrapper at the same time removes the
+re-transmit described below.
+
+**The app already accepts a bare `success` / `fail` body too**, so if you would
+rather keep `client.println("success")` as the body, only the header lines and
+`client.stop()` are actually required. Matching is case-insensitive and ignores
+the trailing CRLF that `println` appends.
+
+Mock modes `raw` (today's firmware) and `plain` (once it sends headers) let you
+see both behaviours without flashing anything.
+
+### Two other things worth fixing while you are in there
+
+1. **The socket is never closed after replying.** There is no `client.stop()` on
+   the reply path, so `while (client.connected())` spins with no `delay()` until
+   the client hangs up — burning CPU and holding the ESP32's only client slot.
+2. **The retry loop re-fires the IR code.** `while (trial < 3 && powerButton())`
+   calls `powerButton()` *as the loop condition*, so every iteration transmits.
+   It is unreachable today — `sendNEC` does not throw and ESP32 Arduino builds
+   normally have exceptions disabled, so it always returns `0` — but if it ever
+   returned `1`, `/Power` would toggle the unit up to four times and write four
+   reply lines. The app never retries a command for exactly this reason.
 
 ---
 
@@ -52,6 +108,24 @@ bad credential  401  {"result":"Fail","error":"unauthorized"}
 IR send failed  500  {"result":"Fail","error":"ir send failed"}
 busy            503  {"result":"Fail","error":"busy"}
 ```
+
+**Two body shapes are accepted**, because the firmware and `Instruction.md`
+section 1 do not agree on one:
+
+| Body | Read as |
+|---|---|
+| `{"result":"Success","command":"Power"}` | success, and the command name is cross-checked |
+| `success` (any case, trailing CRLF ignored) | success |
+| `{"result":"Fail","error":"…"}` | device error, with the reason |
+| `fail` | device error |
+| anything else | `BadResponse` — never optimistically a success |
+
+**Known gap:** a bare `success` carries no command name, so the app cannot check
+that the device confirmed the action it was actually asked for. It is only safe
+because the app refuses to send a second command while one is in flight, so there
+is never more than one outstanding request to confuse. If the firmware ever
+replies out of order, or grows request queuing, switch to the JSON shape — the
+cross-check and its test are already there.
 
 There is **no status endpoint**. The device stores no state (`enableIR` in the
 firmware is assigned and never read), so nothing can be polled for the air
@@ -120,10 +194,13 @@ effect on the next poll without a restart.
 ```bash
 CTRL=http://127.0.0.1:8081/__control
 
-curl "$CTRL/mode?set=normal"      # confirmed commands, ages stay fresh
+curl "$CTRL/mode?set=normal"      # the JSON contract; ages stay fresh
+curl "$CTRL/mode?set=raw"         # Main.ino TODAY: no HTTP framing, app cannot read it
+curl "$CTRL/mode?set=plain"       # Main.ino once it sends headers: bare 'success' body
+curl "$CTRL/mode?set=plainfail"   # bare 'fail' body -> device error, still reachable
 curl "$CTRL/mode?set=slow&ms=10000"  # rule 1 + rule 4: pending, then timeout
 curl "$CTRL/mode?set=refuse"      # rule 3: connection refused, banner goes Disconnected
-curl "$CTRL/mode?set=silent"      # what the real firmware does today
+curl "$CTRL/mode?set=silent"      # the older firmware, which replied nothing at all
 curl "$CTRL/mode?set=malformed"   # unreadable reply is a failure, not a success
 curl "$CTRL/mode?set=500"         # device error, but still demonstrably reachable
 curl "$CTRL/auth?set=on"          # then save a credential in Settings (esp32 / secret)
@@ -175,23 +252,27 @@ here. Nothing below has been tested against real hardware.
 
 ### Blocked on the API — needs firmware work, out of scope here
 
-1. **No command can be confirmed.** The firmware writes no HTTP response. Until
-   it does, every command in this app will show as timed out even on success.
-   This is the one that makes the app usable or not.
+1. **No command can be confirmed yet.** The firmware replies, but without HTTP
+   framing, so the reply is unparseable and every command still reads as a
+   failure. See "Read this first" for the fix. This is the one that decides
+   whether the app is usable.
 2. **No stop / safe control exists.** `Instruction.md` rule 6 requires one.
    `/Power` is a toggle, so wiring stop to it could switch the unit **on** —
    precisely the rule-1 failure the document is written to prevent. The app
    therefore ships a **Cancel** button that aborts the in-flight request and is
    honestly labelled as not commanding the device. A real stop needs an explicit
    off endpoint.
-3. **`/Silent`, `/Low_Temp` and `/High_Temp` do not exist in the firmware.** The
-   app sends them because the contract says they exist; against the current
-   device they will hang like `/Power`. `lowerTempButton()` is currently an
-   empty stub.
-4. **No status endpoint.** Section 6.2's "current device state" is therefore the
-   last *confirmed command*, plus a permanent caveat in the UI saying the app
-   does not know whether the air conditioner is on. It never implies otherwise.
-5. **Section 7's "value that changes on its own"** has no counterpart, because
+3. **The reply carries no command name**, so a bare `success` cannot be matched
+   against what was asked. See "Known gap" under Contract.
+4. **No status endpoint.** `enableIR` is still assigned and never read, so the
+   device holds no state to poll. Section 6.2's "current device state" is
+   therefore the last *confirmed command*, plus a permanent caveat in the UI
+   saying the app does not know whether the air conditioner is on.
+5. **No authentication.** The firmware checks none, so the keychain path is
+   dormant: nothing is sent unless you store a credential, and the device would
+   ignore it if you did. It is wired and tested so that adding Basic auth to the
+   firmware needs no app change.
+6. **Section 7's "value that changes on its own"** has no counterpart, because
    the contract exposes no readable value. Staleness is instead demonstrated by
    the reachability probe going dark in `refuse` mode.
 
@@ -200,9 +281,13 @@ here. Nothing below has been tested against real hardware.
 - [ ] `IR_REMOTE_BASE_URL=http://192.168.0.102` — does the banner reach Connected?
       (This only proves the TCP port is open, which is all it claims.)
 - [ ] Does the ESP32's DHCP lease still put it at `192.168.0.102`?
-- [ ] Press Power once. Does the air conditioner respond, and does the app show
-      a confirmation or a timeout? A timeout with the unit responding confirms
-      the missing-response problem above.
+- [ ] Press Power once **before** the firmware fix. Expect the unit to respond
+      while the app reports a failure — that is the HTTP/0.9 problem, and seeing
+      it confirms the diagnosis.
+- [ ] Press Power once **after** the fix. Expect "Power confirmed by device"
+      with a latency in the log pane.
+- [ ] Does each of Silent, Temp − and Temp + move the right setting? The app
+      trusts the firmware's path-to-IR-code mapping and cannot check it.
 - [ ] With the app polling, does a command still get through? The firmware
       serves one client at a time; the poller skips while a command is in
       flight, but that ordering is untested against real hardware.

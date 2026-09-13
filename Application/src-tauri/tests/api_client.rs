@@ -31,6 +31,12 @@ enum Behaviour {
     Slow(u64),
     /// Confirm a different command than the one requested.
     WrongEcho,
+    /// Valid HTTP, but a bare word for a body - what Main.ino will send once it
+    /// writes headers, since it replies `client.println("success")`.
+    PlainText(&'static str),
+    /// No HTTP framing at all: a bare line and the socket left open. This is
+    /// Main.ino exactly as it stands today.
+    NoHttpFraming,
 }
 
 struct TestServer {
@@ -92,6 +98,25 @@ fn spawn(behaviour: Behaviour) -> TestServer {
                 }
                 Behaviour::Status(code, body) => {
                     let _ = write_json(&mut stream, code, body);
+                }
+                Behaviour::PlainText(word) => {
+                    // println appends CRLF, so the body carries it.
+                    let body = format!("{word}\r\n");
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(head.as_bytes());
+                    let _ = stream.write_all(body.as_bytes());
+                    let _ = stream.flush();
+                }
+                Behaviour::NoHttpFraming => {
+                    // Exactly client.println("success"): no status line, no
+                    // headers, no blank line. Then the socket is left open,
+                    // because the firmware never calls client.stop().
+                    let _ = stream.write_all(b"success\r\n");
+                    let _ = stream.flush();
+                    std::thread::sleep(Duration::from_secs(20));
                 }
             }
         }
@@ -183,6 +208,61 @@ async fn a_reply_confirming_the_wrong_command_is_rejected() {
         Err(Failure::BadResponse(d)) => assert!(d.contains("Silent"), "got {d}"),
         other => panic!("expected BadResponse, got {other:?}", other = other.err()),
     }
+}
+
+// ------------------------------------------- the firmware's own shapes ----
+
+#[tokio::test]
+async fn a_bare_success_body_over_http_is_accepted() {
+    // Main.ino replies client.println("success"). Once it also writes headers,
+    // this is what arrives, and the app must accept it.
+    let s = spawn(Behaviour::PlainText("success"));
+    let c = client_for(&s.base_url, 2_000);
+
+    c.send_command(Command::Power, None)
+        .await
+        .expect("a bare 'success' body must confirm the command");
+    assert_eq!(s.hits(), 1);
+}
+
+#[tokio::test]
+async fn a_bare_fail_body_is_a_device_error() {
+    let s = spawn(Behaviour::PlainText("fail"));
+    let c = client_for(&s.base_url, 2_000);
+
+    match c.send_command(Command::Power, None).await {
+        Err(Failure::DeviceError(d)) => assert!(d.contains("fail"), "got {d}"),
+        other => panic!("expected DeviceError, got {other:?}", other = other.err()),
+    }
+}
+
+#[tokio::test]
+async fn the_serial_chatter_is_not_mistaken_for_confirmation() {
+    // The firmware also writes "Sending Power Signal..." - to Serial, not to the
+    // client. If it ever reached the socket, it must not read as success.
+    let s = spawn(Behaviour::PlainText("Sending Power Signal..."));
+    let c = client_for(&s.base_url, 2_000);
+
+    match c.send_command(Command::Power, None).await {
+        Err(Failure::BadResponse(_)) => {}
+        other => panic!("expected BadResponse, got {other:?}", other = other.err()),
+    }
+}
+
+#[tokio::test]
+async fn a_reply_without_http_framing_is_never_read_as_success() {
+    // Main.ino as it stands today: `success\r\n` with no status line and no
+    // headers is HTTP/0.9, which no HTTP client will parse. The command fired
+    // on the device, but the app cannot know that - and must not pretend it can.
+    let s = spawn(Behaviour::NoHttpFraming);
+    let c = client_for(&s.base_url, 1_000);
+
+    let result = c.send_command(Command::Power, None).await;
+    assert!(
+        result.is_err(),
+        "an unparseable reply must never confirm a command"
+    );
+    assert_eq!(s.hits(), 1, "and it must not be retried");
 }
 
 // ------------------------------------------------- rule 4: timeouts -------

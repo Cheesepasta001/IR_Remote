@@ -2,6 +2,11 @@
 #include <WiFi.h>
 #include "secret.h"
 
+#define POWER 1
+#define SILENT 2
+#define HIGH_TEMP 3
+#define LOW_TEMP 4
+
 const char* ssid = NetworkName;
 const char* password = NetworkPassword;
 
@@ -14,60 +19,63 @@ NetworkClient client;
 bool enableIR = true;
 int trial = 0;
 
-int powerButton (){
-  try{
-    Serial.write("Sending Power Signal...");
-    irsend.sendNEC(POWER_CODE, MY_BIT);
-    client.println("success");
-    return 0;
-  }
-  catch(const std::exception& e) {
-        // A fallback catch for any other standard exceptions
-        client.println("fail");
-        return 1;
+void socketSuccessHandler(int instance){
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: application/json");
+  client.println("Connection: close");
+  client.println();                       // the blank line is required
+
+  switch (instance){
+    case 1: //Power
+      client.println("{\"result\":\"Success\",\"command\":\"Power\"}");
+      break;
+    case 2: //Silent
+      client.println("{\"result\":\"Success\",\"command\":\"Silent\"}");
+      break;
+    case 3: //Temp Up
+      client.println("{\"result\":\"Success\",\"command\":\"High_Temp\"}");
+      break;
+    case 4:
+      client.println("{\"result\":\"Success\",\"command\":\"Low_Temp\"}");
+      break;
   }
 }
 
-int lowTempButton(){
-  try{
-    Serial.write("Sending Power Signal...");
-    irsend.sendNEC(LOW_TEMP, MY_BIT);
-    client.println("success");
-    return 0;
-  }
-  catch(const std::exception& e) {
-        // A fallback catch for any other standard exceptions
-        client.println("fail");
-        return 1;
-  }
+void sendHttpResponse(int statusCode = 404, int instanceCode = 1) {
+    if (statusCode == 200)
+        socketSuccessHandler(instanceCode);
+    else if (statusCode == 400)
+        client.println("HTTP/1.1 400 Bad Request");
+    else if (statusCode == 404)
+        client.println("HTTP/1.1 404 Not Found");
+    else if (statusCode == 500)
+        client.println("HTTP/1.1 500 Internal Server Error");
+
+    client.stop();
+}
+
+void powerButton (){
+  Serial.println("Sending Power Signal...");
+  irsend.sendNEC(POWER_CODE, MY_BIT);
+  socketSuccessHandler(POWER);
+}
+
+void lowTempButton(){
+  Serial.println("Sending Power Signal...");
+  irsend.sendNEC(LOW_TEMP_CODE, MY_BIT);
+  socketSuccessHandler(LOW_TEMP);
 }
 
 int highTempButton(){
-  try{
-    Serial.write("Sending Power Signal...");
-    irsend.sendNEC(HIGH_TEMP, MY_BIT);
-    client.println("success");
-    return 0;
-  }
-  catch(const std::exception& e) {
-        // A fallback catch for any other standard exceptions
-        client.println("fail");
-        return 1;
-  }
+  Serial.println("Sending Power Signal...");
+  irsend.sendNEC(HIGH_TEMP_CODE, MY_BIT);
+  socketSuccessHandler(HIGH_TEMP);
 }
 
 int silentButton(){
-  try{
-    Serial.write("Sending Power Signal...");
-    irsend.sendNEC(SILENT_CODE, MY_BIT);
-    client.println("success");
-    return 0;
-  }
-  catch(const std::exception& e) {
-        // A fallback catch for any other standard exceptions
-        client.println("fail");
-        return 1;
-  }
+  Serial.println("Sending Power Signal...");
+  irsend.sendNEC(SILENT_CODE, MY_BIT);
+  socketSuccessHandler(SILENT);
 }
 
 void setup() {
@@ -78,6 +86,7 @@ void setup() {
 
   Serial.print("Connecting to WIFI");
   while (WiFi.status() != WL_CONNECTED) {
+    sendHttpResponse(500);
     delay(500);
     Serial.print(".");
   }
@@ -94,45 +103,33 @@ void loop() {
   client = server.accept();  // listen for incoming clients
 
   if (client) {                     // if you get a client,
-    Serial.println("New Client.");  // print a message out the serial port
+    Serial.println("Client Connected.");  // print a message out the serial port
     String currentLine = "";        // make a String to hold incoming data from the client
     while (client.connected()) {    // loop while the client's connected
       if (client.available()) {     // if there's bytes to read from the client,
         char c = client.read();     // read a byte, then
-        Serial.write(c);            // print it out the serial monitor
+        Serial.println(c);            // print it out the serial monitor
         
         if (c != '\r') {  // if you got anything else but a carriage return character,
           currentLine += c;      // add it to the end of the currentLine
         }
         
         // Check to see if the client request is given 
-        if (currentLine.endsWith("GET /Power")) {
-          trial = 0;
-          while (trial < 3 && powerButton()){
-            trial++;
-            delay(500);
-          }
+        if (currentLine.indexOf("GET /Power") >= 0) {
+          powerButton();
+          break;
         }
-        if (currentLine.endsWith("GET /Silent")) {
-          trial = 0;
-          while (trial < 3 && silentButton()){
-            trial++;
-            delay(500);
-          }
+        if (currentLine.indexOf("GET /Silent") >= 0) {
+          silentButton();
+          break;
         }
-        if (currentLine.endsWith("GET /Low_Temp")) {
-          trial = 0;
-          while (trial < 3 && lowTempButton()){
-            trial++;
-            delay(500);
-          }
+        if (currentLine.indexOf("GET /Low_Temp") >= 0) {
+          lowTempButton();
+          break;
         }
-        if (currentLine.endsWith("GET /High_Temp")) {
-          trial = 0;
-          while (trial < 3 && highTempButton()){
-            trial++;
-            delay(500);
-          }
+        if (currentLine.indexOf("GET /High_Temp") >= 0) {
+          highTempButton();
+          break;
         }
         
       }
