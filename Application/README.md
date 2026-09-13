@@ -156,24 +156,63 @@ Rust must be on PATH. If `cargo` is not found, add `%USERPROFILE%\.cargo\bin`.
 
 ### Switching between the mock and a real device — one step
 
-Set `IR_REMOTE_BASE_URL` before launching:
+The target is read once at startup, in this order:
+
+1. the `IR_REMOTE_BASE_URL` **environment variable**
+2. `IR_REMOTE_BASE_URL` in a **`.env` file** — looked for beside the working
+   directory, its parent, and the executable, so it is found both under
+   `npm run tauri dev` (which runs from `src-tauri/`) and from an installed build
+3. the built-in default, `http://127.0.0.1:8080` — the mock
+
+So the normal way to point at your device is `Application/.env`:
+
+```dotenv
+IR_REMOTE_BASE_URL=http://192.168.0.102
+```
+
+`.env` is gitignored. Comments, `export ` prefixes and quoted values are handled.
+A value that is blank or not a usable URL is reported on stderr and skipped
+rather than silently becoming the target.
+
+To override for one run without editing the file:
 
 ```bash
-# the mock (this is the default when the variable is unset)
-npm run tauri dev
-
-# the real ESP32
-IR_REMOTE_BASE_URL=http://192.168.0.102 npm run tauri dev
+IR_REMOTE_BASE_URL=http://127.0.0.1:8080 npm run tauri dev
 ```
-
-On PowerShell:
 
 ```powershell
-$env:IR_REMOTE_BASE_URL = "http://192.168.0.102"; npm run tauri dev
+$env:IR_REMOTE_BASE_URL = "http://127.0.0.1:8080"; npm run tauri dev
 ```
 
-The same field is editable at runtime in the app's Settings pane, which takes
-effect on the next poll without a restart.
+**The base URL is not editable at runtime.** Settings shows it read-only along
+with where it came from, so there is one source of truth for which device this
+is. Change `.env` and restart.
+
+### Alarms
+
+Daily, repeating, persisted to `alarms.json` in the OS app-config directory so
+they survive a restart. Each alarm has a time and a command.
+
+**An alarm cannot promise the unit ends up on or off.** `/Power` is a single
+toggle code and the device reports no state, so the UI says *"Send Power at
+07:00"*, never *"Turn on at 07:00"* — if the air conditioner is already running
+when a Power alarm fires, it switches off, and nothing in the app can detect
+that. Discrete `/On` and `/Off` IR codes in the firmware are what would make
+alarms idempotent and let the wording change.
+
+**A missed alarm is skipped, never fired late.** A desktop app cannot wake
+itself, so if the app was closed through an alarm's time it resolves as *missed*
+and is shown as such. Firing a Power toggle hours late is worse than not firing
+it. An alarm fires at most once per day; re-enabling one clears that so it can
+still run today.
+
+All the scheduling decisions live in `alarm.rs` and are pure — the caller passes
+the local time in, which is how every rule above is tested without waiting for a
+clock. `scheduler.rs` only supplies the clock and performs the send.
+
+Rust's standard library has no timezone database, so the **view reports its UTC
+offset** (`-new Date().getTimezoneOffset()`) and the core does the scheduling.
+That is environment data the view happens to know, not a policy decision it makes.
 
 ---
 
@@ -186,8 +225,34 @@ effect on the next poll without a restart.
 | 3. Disconnected is first-class | `Connection::Offline` | Mock mode `refuse`; the banner becomes a defined Disconnected state, not a toast |
 | 4. Explicit timeouts | `api_client.rs` `Timeouts` | 3 s command, 1.5 s probe, both per-request; no unbounded wait exists |
 | 5. Retries only when idempotent | `Command::is_idempotent` (always false) | No command is ever retried; only the TCP probe retries, 3 attempts with backoff |
-| 6. Cancel always reachable | `AppState::can_abort`, published on the snapshot | Enabled while disconnected, while pending, and at rest — the core decides it, the view only renders it |
+| 6. Cancel always reachable | `AppState::can_abort`, `abort` IPC command | **No longer surfaced as a button** — see the note below |
 | 7. Token never in the frontend | `auth.rs`, `Snapshot.has_credential` | The snapshot carries a boolean; `Credentials`' `Debug` prints `<redacted>` |
+
+### On rule 6, the cancel control
+
+`Instruction.md` rule 6 asks for a stop control that is always reachable. This
+app no longer shows one, by request. Two things make that defensible, and both
+should be re-examined if either changes:
+
+- **It never was a device stop.** The API exposes no safe "off", and `/Power` is
+  a toggle, so a stop button could switch the unit **on**. What the button
+  actually did was cancel the app's own in-flight HTTP request.
+- **Commands self-clear.** Every request carries a 3 s timeout, so a pending
+  command resolves on its own; there is nothing that can stick.
+
+The `abort` IPC command and its state-machine tests are kept, so restoring the
+button is a UI change only. If the firmware ever gains a real off endpoint, rule
+6 applies again in full and a stop control should come back.
+
+### What the UI no longer shows
+
+- **The log pane.** The core still records the last 100 requests and `get_log`
+  still returns them; nothing renders it. For a device you cannot see, this was
+  the debugging surface — if you are diagnosing something, that command is where
+  the history is.
+- **The banner detail line.** The banner is now just Connected / Disconnected /
+  Connecting. A **stale** reading reads as Disconnected rather than Connected,
+  since a sighting that has aged past the threshold no longer supports the claim.
 
 ### Demonstrating them against the mock
 
@@ -219,7 +284,9 @@ src-tauri/src/
   api_client.rs reqwest, explicit timeouts, retry policy
   auth.rs       OS keychain (Windows Credential Manager)
   state.rs      pure state machine — no I/O, no clock reads
+  alarm.rs      pure daily-alarm scheduling — no I/O, no clock reads
   poller.rs     background reachability probe
+  scheduler.rs  background alarm task
   core.rs       shared state + log ring buffer + snapshot emission
 src-tauri/capabilities/default.json   webview permissions — required
 mock/server.js  the contract, and every fault mode

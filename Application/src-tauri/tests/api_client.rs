@@ -50,6 +50,22 @@ impl TestServer {
     fn hits(&self) -> usize {
         self.hits.load(Ordering::SeqCst)
     }
+
+    /// Wait for the accept loop to catch up.
+    ///
+    /// A bare TCP connect completes in the kernel the moment the handshake
+    /// lands, so `probe()` can return before the server thread has called
+    /// `accept()`. Asserting the count immediately is a race; this waits for it.
+    fn wait_for_hits(&self, want: usize, timeout: Duration) -> usize {
+        let deadline = std::time::Instant::now() + timeout;
+        while std::time::Instant::now() < deadline {
+            if self.hits() >= want {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        self.hits()
+    }
 }
 
 fn spawn(behaviour: Behaviour) -> TestServer {
@@ -336,7 +352,7 @@ async fn the_probe_succeeds_without_sending_a_request() {
     // connection and closes it, so the server sees a connection but the app has
     // sent no command. `hits` counts accepted connections, so 1 here means the
     // handshake happened; what matters is that no HTTP request was written.
-    assert_eq!(s.hits(), 1);
+    assert_eq!(s.wait_for_hits(1, Duration::from_secs(2)), 1);
     assert!(
         s.last_auth.lock().unwrap().is_none(),
         "the probe must not send headers"
@@ -413,23 +429,32 @@ async fn no_credential_means_no_auth_header() {
 
 #[test]
 fn the_env_var_switches_the_target() {
+    use ir_remote_lib::api_client::BaseUrlSource;
+
     // Serialised implicitly: this is the only test touching this variable.
     std::env::set_var("IR_REMOTE_BASE_URL", "http://192.168.0.102");
-    assert_eq!(Config::from_env().base_url, "http://192.168.0.102");
+    let (config, source) = Config::from_env();
+    assert_eq!(config.base_url, "http://192.168.0.102");
+    assert_eq!(source, BaseUrlSource::Environment);
 
-    std::env::set_var("IR_REMOTE_BASE_URL", "   ");
-    assert_eq!(
-        Config::from_env().base_url,
-        "http://127.0.0.1:8080",
-        "blank must fall back to the mock"
-    );
-
-    std::env::set_var("IR_REMOTE_BASE_URL", "not a url");
-    assert_eq!(
-        Config::from_env().base_url,
-        "http://127.0.0.1:8080",
-        "junk must fall back rather than produce an unusable client"
-    );
+    // Blank and junk must not become the target. They fall through to the next
+    // source - which may legitimately be a .env file sitting beside the project,
+    // so assert what must NOT happen rather than pinning one exact fallback.
+    for bad in ["   ", "not a url"] {
+        std::env::set_var("IR_REMOTE_BASE_URL", bad);
+        let (config, source) = Config::from_env();
+        assert_ne!(
+            config.base_url, bad,
+            "an unusable value must never become the target"
+        );
+        assert_ne!(
+            source,
+            BaseUrlSource::Environment,
+            "an unusable env var must not be reported as the source"
+        );
+        // Whatever we did fall back to has to be addressable.
+        assert!(ir_remote_lib::api_client::host_port(&config.base_url).is_ok());
+    }
 
     std::env::remove_var("IR_REMOTE_BASE_URL");
 }

@@ -1,5 +1,6 @@
 #include <IRsend.h>
 #include <WiFi.h>
+#include "time.h"
 #include "secret.h"
 
 #define POWER 1
@@ -9,6 +10,10 @@
 
 const char* ssid = NetworkName;
 const char* password = NetworkPassword;
+const char* ntpServer = "pool.ntp.org";
+const long  gmtOffset_sec = 28800;
+const int   daylightOffset_sec = 0;
+
 
 const uint16_t IR_LED_PIN = 14; // your GPIO
 
@@ -16,8 +21,6 @@ IRsend irsend(IR_LED_PIN);
 NetworkServer server(80);
 NetworkClient client;
 
-bool enableIR = true;
-int trial = 0;
 
 void socketSuccessHandler(int instance){
   client.println("HTTP/1.1 200 OK");
@@ -90,6 +93,8 @@ void setup() {
 
   irsend.begin(); // IR Initiation
   server.begin(); // Server Initiation
+  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer); // Init and get the time
+
 }
 
 void loop() {

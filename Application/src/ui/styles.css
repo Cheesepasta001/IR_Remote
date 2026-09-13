@@ -207,71 +207,6 @@ h2 {
   color: var(--pending);
 }
 
-/* ---------------------------------------------------------- cancel ---- */
-
-.cancel-card {
-  border-color: #5a3a1a;
-}
-
-.cancel {
-  width: 100%;
-  background: #3a2410;
-  color: #ffc978;
-  border: 1px solid #8a5a20;
-  border-radius: 8px;
-  padding: 16px;
-  font-size: 15px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.cancel:hover {
-  background: #4a2e14;
-}
-
-kbd {
-  background: #00000055;
-  border: 1px solid #ffffff22;
-  border-radius: 4px;
-  padding: 1px 6px;
-  font-size: 11px;
-  margin-left: 6px;
-}
-
-/* ------------------------------------------------------------- log ---- */
-
-.log {
-  height: 220px;
-  overflow-y: auto;
-  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
-  font-size: 12px;
-  background: #0d1117;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 8px 10px;
-}
-
-.log div {
-  white-space: pre-wrap;
-  padding: 1px 0;
-  color: var(--muted);
-}
-
-.log div.tone-ok {
-  color: var(--ok);
-}
-.log div.tone-bad {
-  color: var(--bad);
-}
-.log div.tone-pending {
-  color: var(--pending);
-}
-
-.log .empty {
-  color: var(--muted);
-  font-style: italic;
-}
-
 /* -------------------------------------------------------- settings ---- */
 
 .settings {
@@ -316,4 +251,168 @@ kbd {
 
 .settings button:hover {
   border-color: var(--idle);
+}
+
+.settings select {
+  background: #0d1117;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 8px 10px;
+  font: inherit;
+}
+
+.setting-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  margin: 0 0 2px;
+}
+
+.setting-key {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.setting-value {
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 13px;
+}
+
+/* --------------------------------------------------- settings toggle ---- */
+
+.icon-button {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+  padding: 6px 9px;
+  cursor: pointer;
+}
+
+.icon-button:hover {
+  color: var(--text);
+  border-color: var(--line);
+}
+
+.icon-button.active {
+  color: var(--idle);
+  border-color: var(--idle);
+}
+
+/* ---------------------------------------------------------- alarms ---- */
+
+.alarm-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  align-items: end;
+  margin-bottom: 14px;
+}
+
+.alarm-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.alarm-form input,
+.alarm-form select {
+  background: #0d1117;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 8px 10px;
+  font: inherit;
+}
+
+.alarm-form button {
+  background: #232a36;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 9px 14px;
+  cursor: pointer;
+  font: inherit;
+}
+
+.alarm-form button:hover {
+  border-color: var(--idle);
+}
+
+.alarms {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.alarm-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: #0d1117;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.alarm-row.off {
+  opacity: 0.55;
+}
+
+.alarm-time {
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+  min-width: 62px;
+}
+
+.alarm-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.alarm-action {
+  font-size: 14px;
+}
+
+.alarm-status {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.alarm-status.tone-ok {
+  color: var(--ok);
+}
+.alarm-status.tone-bad {
+  color: var(--bad);
+}
+
+.alarm-toggle,
+.alarm-remove {
+  background: #232a36;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font: inherit;
+  flex: none;
+}
+
+.alarm-toggle[aria-pressed="true"] {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+
+.alarm-remove:hover {
+  border-color: var(--bad);
+  color: var(--bad);
 }

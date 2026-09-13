@@ -2,7 +2,8 @@
  * Shared types mirroring the API and the Rust core's serialization.
  *
  * The frontend is a view (Instruction.md section 5): nothing here builds a URL,
- * holds a credential, or decides retry policy. `Snapshot` is everything it knows.
+ * holds a credential, or decides retry or scheduling policy. `Snapshot` is
+ * everything it knows.
  */
 
 /** The four commands from Instruction.md section 1. */
@@ -38,12 +39,38 @@ export interface AppState {
   staleAfterMs: number;
 }
 
+/** Where the base URL came from. It is read once at startup, not editable. */
+export type BaseUrlSource = 'environment' | 'dotEnv' | 'default';
+
+export type AlarmOutcome = 'fired' | 'failed' | 'missed';
+
+/**
+ * A daily alarm.
+ *
+ * It sends a command at a time — it cannot mean "turn on". `/Power` is a
+ * toggle and the device reports no state, so the UI must say "Send Power",
+ * never "Turn on". See `alarm.rs` for the full reasoning.
+ */
+export interface Alarm {
+  id: number;
+  hour: number;
+  minute: number;
+  enabled: boolean;
+  command: Command;
+  lastDay: number | null;
+  lastOutcome: AlarmOutcome | null;
+  lastFiredMs: number | null;
+  /** Derived in the core so the view does no scheduling arithmetic. */
+  minutesUntilNext: number | null;
+}
+
 export interface Snapshot {
   state: AppState;
   nowMs: number;
   ageMs: number | null;
   isStale: boolean;
   baseUrl: string;
+  baseUrlSource: BaseUrlSource;
   pollIntervalMs: number;
   commandTimeoutMs: number;
   probeTimeoutMs: number;
@@ -53,6 +80,8 @@ export interface Snapshot {
   hasCredential: boolean;
   /** Rule 6. The core decides this; the view only renders it. */
   canAbort: boolean;
+  alarms: Alarm[];
+  tzOffsetMinutes: number;
 }
 
 export type LogKind =
@@ -63,6 +92,7 @@ export type LogKind =
   | 'probeFail'
   | 'info';
 
+/** Still recorded by the core, no longer rendered. */
 export interface LogEntry {
   seq: number;
   atMs: number;
