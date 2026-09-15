@@ -1,6 +1,5 @@
 #include <IRsend.h>
 #include <WiFi.h>
-#include "time.h"
 #include "secret.h"
 
 #define POWER 1
@@ -10,10 +9,6 @@
 
 const char* ssid = NetworkName;
 const char* password = NetworkPassword;
-const char* ntpServer = "pool.ntp.org";
-const long  gmtOffset_sec = 28800;
-const int   daylightOffset_sec = 0;
-
 
 const uint16_t IR_LED_PIN = 14; // your GPIO
 
@@ -93,8 +88,6 @@ void setup() {
 
   irsend.begin(); // IR Initiation
   server.begin(); // Server Initiation
-  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer); // Init and get the time
-
 }
 
 void loop() {
@@ -111,34 +104,30 @@ void loop() {
         if (c != '\r') {  // if you got anything else but a carriage return character,
           currentLine += c;      // add it to the end of the currentLine
         }
-        if (c == '\n') {
-          if (currentLine.startsWith("Get ")){
-            // Check to see if the client request is given 
-            if (currentLine.indexOf("GET /Power") >= 0) {
-              powerButton();
-              socketSuccessHandler(POWER);
-            }
-            else if (currentLine.indexOf("GET /Silent") >= 0) {
-              silentButton();
-              socketSuccessHandler(SILENT);
-            }
-            else if (currentLine.indexOf("GET /Low_Temp") >= 0) {
-              lowTempButton();
-              socketSuccessHandler(LOW_TEMP);
-            }
-            else if (currentLine.indexOf("GET /High_Temp") >= 0) {
-              highTempButton();
-              socketSuccessHandler(HIGH_TEMP);
-            }
-            else {
-              sendHttpResponse();
-            }
-
-            break;
+        if (c == '\n'){ // If line ended with newline character
+          // Check to see if the client request is given 
+          if (currentLine.indexOf("/Power") >= 0) {
+            powerButton();
+            socketSuccessHandler(POWER);
           }
+          else if (currentLine.indexOf("/Silent") >= 0) {
+            silentButton();
+            socketSuccessHandler(SILENT);
+          }
+          else if (currentLine.indexOf("/Low_Temp") >= 0) {
+            lowTempButton();
+            socketSuccessHandler(LOW_TEMP);
+          }
+          else if (currentLine.indexOf("/High_Temp") >= 0) {
+            highTempButton();
+            socketSuccessHandler(HIGH_TEMP);
+          }
+          else {
+            sendHttpResponse();
+          }
+
+          break;
         }
-        
-        
       }
     }
     // close the connection:
