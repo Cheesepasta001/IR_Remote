@@ -17,6 +17,12 @@ use crate::core::{dispatch_command, LogKind, Shared};
 const TICK: Duration = Duration::from_secs(15);
 
 pub fn spawn(shared: Shared) {
+    // Android hands alarms to AlarmManager, which fires with the app dead.
+    // Running this loop as well would send every IR code twice.
+    if crate::android_alarm::native_scheduler() {
+        return;
+    }
+
     tauri::async_runtime::spawn(async move {
         let mut ticker = interval(TICK);
         // A laptop waking from sleep must not fire a burst of catch-up ticks.

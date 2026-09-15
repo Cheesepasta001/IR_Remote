@@ -40,7 +40,7 @@ export interface AppState {
 }
 
 /** Where the base URL came from. It is read once at startup, not editable. */
-export type BaseUrlSource = 'environment' | 'dotEnv' | 'default';
+export type BaseUrlSource = 'stored' | 'environment' | 'dotEnv' | 'compiled' | 'default';
 
 export type AlarmOutcome = 'fired' | 'failed' | 'missed';
 
@@ -71,6 +71,8 @@ export interface Snapshot {
   isStale: boolean;
   baseUrl: string;
   baseUrlSource: BaseUrlSource;
+  /** Android only: the address can be changed from inside the app. */
+  baseUrlEditable: boolean;
   pollIntervalMs: number;
   commandTimeoutMs: number;
   probeTimeoutMs: number;
@@ -82,6 +84,11 @@ export interface Snapshot {
   canAbort: boolean;
   alarms: Alarm[];
   tzOffsetMinutes: number;
+  /**
+   * Android: whether the OS will honour exact alarms. null where the question
+   * does not arise (desktop) or the check has not run.
+   */
+  exactAlarms: boolean | null;
 }
 
 export type LogKind =

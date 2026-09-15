@@ -51,36 +51,77 @@ pub const BASE_URL_ENV: &str = "IR_REMOTE_BASE_URL";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum BaseUrlSource {
+    /// Saved in the app's own storage by the user. Android only - an APK has no
+    /// `.env` beside it, so the address has to be settable in the app.
+    Stored,
     /// A process environment variable.
     Environment,
-    /// A `.env` file next to the app.
+    /// A `.env` file next to the app. Desktop only in practice.
     DotEnv,
+    /// Compiled in from `IR_REMOTE_BASE_URL` at build time.
+    Compiled,
     /// Nothing configured; the built-in mock address.
     Default,
 }
 
+/// The value of `IR_REMOTE_BASE_URL` when this binary was COMPILED.
+///
+/// This is how an APK gets a sensible default: there is no `.env` inside an
+/// installed app, so the build bakes one in. `build.rs` declares a
+/// `rerun-if-env-changed` so changing it actually triggers a rebuild.
+const COMPILED_BASE_URL: Option<&str> = option_env!("IR_REMOTE_BASE_URL");
+
 impl Config {
-    /// Read the target, in order: the process environment, then a `.env` file,
-    /// then the built-in default (the mock).
+    /// Read the target, in priority order:
     ///
-    /// An unparseable value is reported and skipped rather than silently
-    /// accepted: pointing the app at an address it cannot resolve should be
-    /// loud, not a mystery timeout later.
-    pub fn from_env() -> (Config, BaseUrlSource) {
+    /// 1. `stored` - what the user saved in the app (Android)
+    /// 2. the process environment
+    /// 3. a `.env` file beside the app (desktop)
+    /// 4. the value compiled in at build time
+    /// 5. the built-in default, the mock
+    ///
+    /// An unparseable value at any level is reported and skipped rather than
+    /// silently accepted: pointing the app at an address it cannot resolve
+    /// should be loud, not a mystery timeout later.
+    pub fn resolve(stored: Option<String>) -> (Config, BaseUrlSource) {
         let mut config = Config::default();
 
-        if let Some(v) = usable(std::env::var(BASE_URL_ENV).ok(), "environment") {
-            config.base_url = v;
-            return (config, BaseUrlSource::Environment);
-        }
-
-        if let Some(v) = usable(dot_env_value(BASE_URL_ENV), ".env") {
-            config.base_url = v;
-            return (config, BaseUrlSource::DotEnv);
+        for (candidate, origin, source) in [
+            (stored, "saved setting", BaseUrlSource::Stored),
+            (
+                std::env::var(BASE_URL_ENV).ok(),
+                "environment",
+                BaseUrlSource::Environment,
+            ),
+            (dot_env_value(BASE_URL_ENV), ".env", BaseUrlSource::DotEnv),
+            (
+                COMPILED_BASE_URL.map(str::to_string),
+                "build",
+                BaseUrlSource::Compiled,
+            ),
+        ] {
+            if let Some(v) = usable(candidate, origin) {
+                config.base_url = v;
+                return (config, source);
+            }
         }
 
         (config, BaseUrlSource::Default)
     }
+
+    /// No saved override - the desktop path, where `.env` is the source of truth.
+    pub fn from_env() -> (Config, BaseUrlSource) {
+        Config::resolve(None)
+    }
+}
+
+/// Whether the address is settable from inside the app.
+///
+/// True on Android, where there is no `.env` to edit and no shell to set an
+/// environment variable in. False on desktop, where `.env` deliberately remains
+/// the single source of truth.
+pub const fn base_url_editable() -> bool {
+    cfg!(target_os = "android")
 }
 
 fn usable(raw: Option<String>, origin: &str) -> Option<String> {

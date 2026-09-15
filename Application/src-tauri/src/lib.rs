@@ -2,6 +2,7 @@
 //! a real socket (Instruction.md section 8), and so `main.rs` stays wiring only.
 
 pub mod alarm;
+pub mod android_alarm;
 pub mod api_client;
 pub mod auth;
 pub mod core;
@@ -86,6 +87,18 @@ fn remove_alarm(shared: tauri::State<'_, Shared>, id: u64) -> Result<(), String>
     shared.remove_alarm(id)
 }
 
+/// Open Android's exact-alarm permission screen. A no-op elsewhere.
+#[tauri::command]
+fn request_exact_alarm_permission(app: tauri::AppHandle) -> Result<(), String> {
+    android_alarm::request_exact_permission(&app)
+}
+
+/// Change which device the app talks to. Android only - see `Shared::set_base_url`.
+#[tauri::command]
+fn set_base_url(shared: tauri::State<'_, Shared>, base_url: String) -> Result<(), String> {
+    shared.set_base_url(&base_url)
+}
+
 /// Runtime tunables. The base URL is NOT here: it comes from the environment or
 /// `.env` at startup, so there is one source of truth for which device this is.
 #[tauri::command]
@@ -151,19 +164,22 @@ async fn clear_credentials(
     Ok(())
 }
 
+/// Entry point for every platform. On Android and iOS the generated native
+/// project calls this through `mobile_entry_point`; on desktop `main.rs` calls
+/// it directly.
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(android_alarm::plugin())
         .setup(|app| {
-            let (config, source) = Config::from_env();
-            let shared = Shared::new(app.handle().clone(), config.clone(), source)?;
+            let shared = Shared::new(app.handle().clone())?;
+            let snap = shared.snapshot();
 
             shared.log(
                 LogKind::Info,
                 format!(
                     "target {} (from {:?}) - polling every {}ms",
-                    config.base_url,
-                    source,
-                    config.poll_interval.as_millis()
+                    snap.base_url, snap.base_url_source, snap.poll_interval_ms
                 ),
                 None,
             );
@@ -179,6 +195,8 @@ pub fn run() {
             send_command,
             abort,
             set_tz_offset,
+            set_base_url,
+            request_exact_alarm_permission,
             add_alarm,
             set_alarm_enabled,
             remove_alarm,

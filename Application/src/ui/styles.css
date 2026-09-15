@@ -416,3 +416,101 @@ h2 {
   border-color: var(--bad);
   color: var(--bad);
 }
+
+/* ------------------------------------------------------------ mobile ---- */
+
+/*
+ * Phone layout. The desktop grids use auto-fit minmax(), which already
+ * collapses to one column on a narrow screen, so this mostly fixes touch
+ * target sizes and the alarm row, which runs out of width first.
+ */
+@media (max-width: 560px) {
+  main {
+    padding: 12px 12px 32px;
+    gap: 10px;
+  }
+
+  h1 {
+    font-size: 18px;
+  }
+
+  .card,
+  .banner {
+    padding: 12px;
+  }
+
+  /* Two controls per row rather than four cramped ones. */
+  .controls {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .controls button {
+    padding: 18px 8px; /* a comfortable tap target */
+  }
+
+  .alarm-form,
+  .settings {
+    grid-template-columns: 1fr;
+  }
+
+  /* The time and the action stack; the toggle and delete stay on the right. */
+  .alarm-row {
+    flex-wrap: wrap;
+    gap: 8px 10px;
+  }
+
+  .alarm-body {
+    flex-basis: 100%;
+    order: 3;
+  }
+
+  .alarm-time {
+    font-size: 24px;
+  }
+
+  .alarm-toggle,
+  .alarm-remove {
+    padding: 10px 16px; /* 44px-ish tap targets */
+  }
+
+  .icon-button {
+    padding: 10px 12px;
+    font-size: 20px;
+  }
+
+  .setting-row {
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .setting-value {
+    font-size: 14px;
+    word-break: break-all;
+  }
+}
+
+/* Avoid iOS/Android zooming the page when a field is focused. */
+@media (max-width: 560px) {
+  .settings input,
+  .settings select,
+  .alarm-form input,
+  .alarm-form select {
+    font-size: 16px;
+  }
+}
+
+.inline-button {
+  background: #232a36;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 10px;
+  margin-left: 8px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+
+.inline-button:hover {
+  border-color: var(--idle);
+}

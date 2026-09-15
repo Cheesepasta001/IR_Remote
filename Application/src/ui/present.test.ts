@@ -9,6 +9,7 @@ import {
   formatAge,
   formatClock,
   formatCountdown,
+  exactAlarmWarningFor,
   parseClock,
   reage,
 } from './present';
@@ -24,6 +25,7 @@ const BASE: Snapshot = {
   isStale: true,
   baseUrl: 'http://127.0.0.1:8080',
   baseUrlSource: 'dotEnv',
+  baseUrlEditable: false,
   pollIntervalMs: 2000,
   commandTimeoutMs: 3000,
   probeTimeoutMs: 1500,
@@ -33,6 +35,7 @@ const BASE: Snapshot = {
   canAbort: true,
   alarms: [],
   tzOffsetMinutes: 480,
+  exactAlarms: null,
 };
 
 function snap(patch: Partial<Snapshot>, statePatch: Partial<Snapshot['state']> = {}): Snapshot {
@@ -300,5 +303,23 @@ describe('a failed alarm is never reported as sent', () => {
       alarm({ lastOutcome: 'failed', lastDay: 10, lastFiredMs: 1_700_000_000_000 }),
     );
     expect(line.status).not.toMatch(/last sent/);
+  });
+});
+
+describe('exact alarm warning (Android)', () => {
+  it('says nothing on desktop, where the question does not arise', () => {
+    expect(exactAlarmWarningFor(BASE).text).toBe('');
+    expect(exactAlarmWarningFor(BASE).canRequest).toBe(false);
+  });
+
+  it('says nothing when exact alarms are permitted', () => {
+    expect(exactAlarmWarningFor(snap({ exactAlarms: true })).text).toBe('');
+  });
+
+  it('warns and offers the permission screen when they are withheld', () => {
+    // Otherwise the countdown promises a minute the OS will not keep.
+    const w = exactAlarmWarningFor(snap({ exactAlarms: false }));
+    expect(w.text).toContain('minutes late');
+    expect(w.canRequest).toBe(true);
   });
 });

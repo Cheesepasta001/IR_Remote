@@ -66,6 +66,8 @@ pub struct Snapshot {
     pub is_stale: bool,
     pub base_url: String,
     pub base_url_source: BaseUrlSource,
+    /// Whether the address can be changed from inside the app (Android only).
+    pub base_url_editable: bool,
     pub poll_interval_ms: u64,
     pub command_timeout_ms: u64,
     pub probe_timeout_ms: u64,
@@ -76,6 +78,11 @@ pub struct Snapshot {
     pub can_abort: bool,
     pub alarms: Vec<AlarmView>,
     pub tz_offset_minutes: i32,
+    /// Android: whether the OS will honour EXACT alarms. `None` where the
+    /// question does not arise (desktop timers are exact). When `Some(false)`
+    /// the schedule still runs, but Android may batch it by minutes - the UI
+    /// must say so rather than promising a time it cannot keep.
+    pub exact_alarms: Option<bool>,
 }
 
 struct Inner {
@@ -92,6 +99,8 @@ struct Inner {
     /// standard library has no timezone database. Until it arrives, 0 (UTC).
     tz_offset_minutes: i32,
     alarms_path: PathBuf,
+    base_url_path: PathBuf,
+    exact_alarms: Option<bool>,
 }
 
 #[derive(Clone)]
@@ -110,19 +119,31 @@ pub fn now_ms() -> u64 {
 }
 
 impl Shared {
-    pub fn new(app: AppHandle, config: Config, base_url_source: BaseUrlSource) -> Result<Self, String> {
+    pub fn new(app: AppHandle) -> Result<Self, String> {
+        let dir = app
+            .path()
+            .app_config_dir()
+            .unwrap_or_else(|_| PathBuf::from("."));
+        let alarms_path = dir.join("alarms.json");
+        let base_url_path = dir.join("device.txt");
+
+        // Only Android consults the saved address; on desktop `.env` stays the
+        // single source of truth, so nothing here can quietly override it.
+        let stored = if crate::api_client::base_url_editable() {
+            std::fs::read_to_string(&base_url_path)
+                .ok()
+                .map(|s| s.trim().to_string())
+        } else {
+            None
+        };
+
+        let (config, base_url_source) = Config::resolve(stored);
         let stale_after_ms = config.stale_after.as_millis() as u64;
         let client = ApiClient::new(config)?;
         let state = AppState {
             stale_after_ms,
             ..AppState::default()
         };
-
-        let alarms_path = app
-            .path()
-            .app_config_dir()
-            .map(|d| d.join("alarms.json"))
-            .unwrap_or_else(|_| PathBuf::from("alarms.json"));
 
         let alarms = load_alarms(&alarms_path);
         let next_alarm_id = alarms.iter().map(|a| a.id).max().unwrap_or(0) + 1;
@@ -141,6 +162,8 @@ impl Shared {
                 next_alarm_id,
                 tz_offset_minutes: 0,
                 alarms_path,
+                base_url_path,
+                exact_alarms: None,
             })),
         })
     }
@@ -293,6 +316,47 @@ impl Shared {
         self.emit_snapshot();
     }
 
+    /// Hand the current schedule to the platform scheduler.
+    ///
+    /// On Android this re-arms AlarmManager; everywhere else it is a no-op and
+    /// the tokio scheduler in `scheduler.rs` keeps ownership.
+    fn sync_native_alarms(&self) {
+        if !crate::android_alarm::native_scheduler() {
+            return;
+        }
+        let (path, base_url, timeout_ms) = {
+            let g = self.inner.lock().unwrap();
+            let c = g.client.config();
+            (
+                g.alarms_path.clone(),
+                c.base_url.clone(),
+                c.timeouts.command.as_millis() as u64,
+            )
+        };
+
+        let exact = match crate::android_alarm::sync(&self.app, &path, &base_url, timeout_ms) {
+            Ok(exact) => {
+                if !exact {
+                    self.log(
+                        LogKind::Info,
+                        "exact alarms are not permitted - Android may fire them minutes late"
+                            .to_string(),
+                        None,
+                    );
+                }
+                Some(exact)
+            }
+            Err(e) => {
+                self.log(LogKind::Info, e, None);
+                // Unknown rather than false: the sync failed, so we genuinely
+                // do not know whether exact alarms would be honoured.
+                None
+            }
+        };
+
+        self.inner.lock().unwrap().exact_alarms = exact;
+    }
+
     fn persist_alarms(&self) {
         let (path, alarms) = {
             let g = self.inner.lock().unwrap();
@@ -315,6 +379,9 @@ impl Shared {
             }
             Err(e) => self.log(LogKind::Info, format!("could not encode alarms: {e}"), None),
         }
+
+        // The platform scheduler reads the file we just wrote.
+        self.sync_native_alarms();
     }
 
     // ------------------------------------------------------------- log ----
@@ -390,6 +457,7 @@ impl Shared {
             now_ms: now,
             base_url: config.base_url.clone(),
             base_url_source: g.base_url_source,
+            base_url_editable: crate::api_client::base_url_editable(),
             poll_interval_ms: config.poll_interval.as_millis() as u64,
             command_timeout_ms: config.timeouts.command.as_millis() as u64,
             probe_timeout_ms: config.timeouts.probe.as_millis() as u64,
@@ -398,6 +466,7 @@ impl Shared {
             has_credential: g.has_credential,
             can_abort: g.state.can_abort(),
             tz_offset_minutes: g.tz_offset_minutes,
+            exact_alarms: g.exact_alarms,
             alarms: g
                 .alarms
                 .iter()
@@ -411,6 +480,49 @@ impl Shared {
 
     pub fn emit_snapshot(&self) {
         let _ = self.app.emit("snapshot", self.snapshot());
+    }
+
+    /// Change which device the app talks to, and remember it.
+    ///
+    /// Android only: an installed APK has no `.env` beside it and no shell to
+    /// set an environment variable in, so the address has to be settable here.
+    /// On desktop this is refused, because `.env` is deliberately the single
+    /// source of truth and a hidden saved value would quietly outrank it.
+    pub fn set_base_url(&self, base_url: &str) -> Result<(), String> {
+        if !crate::api_client::base_url_editable() {
+            return Err(
+                "the device address is read from .env on this platform - edit .env and restart"
+                    .to_string(),
+            );
+        }
+
+        let trimmed = base_url.trim();
+        // Reject before storing: a saved address that cannot be resolved would
+        // come back every launch and fail with no explanation.
+        crate::api_client::host_port(trimmed)?;
+
+        let (path, mut config) = {
+            let g = self.inner.lock().unwrap();
+            (g.base_url_path.clone(), g.client.config().clone())
+        };
+
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        std::fs::write(&path, trimmed)
+            .map_err(|e| format!("could not save the address to {}: {e}", path.display()))?;
+
+        config.base_url = trimmed.to_string();
+        self.set_config(config)?;
+        {
+            let mut g = self.inner.lock().unwrap();
+            g.base_url_source = BaseUrlSource::Stored;
+        }
+
+        self.sync_native_alarms();
+        self.log(LogKind::Info, format!("target set to {trimmed}"), None);
+        self.emit_snapshot();
+        Ok(())
     }
 
     pub fn set_config(&self, config: Config) -> Result<(), String> {

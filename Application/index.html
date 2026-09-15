@@ -59,6 +59,10 @@
 
         <div id="alarms" class="alarms"></div>
         <p id="alarm-error" class="caveat warn"></p>
+        <p id="exact-warning" class="caveat warn" hidden>
+          <span id="exact-warning-text"></span>
+          <button type="button" id="exact-grant" class="inline-button">Allow exact alarms</button>
+        </p>
         <p id="alarm-caveat" class="caveat warn"></p>
       </section>
 
@@ -70,6 +74,13 @@
           <span class="setting-key">Device</span>
           <span id="base-url-value" class="setting-value">—</span>
         </p>
+
+        <form id="device-form" class="settings" hidden>
+          <label>Device address<input id="base-url-input" type="url" inputmode="url"
+                 spellcheck="false" autocomplete="off" placeholder="http://192.168.0.102" /></label>
+          <button type="submit">Save address</button>
+        </form>
+
         <p class="caveat" id="base-url-note"></p>
 
         <form id="settings" class="settings">

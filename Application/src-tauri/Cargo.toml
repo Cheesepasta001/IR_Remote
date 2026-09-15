@@ -1,13 +1,15 @@
 [package]
 name = "ir-remote"
 version = "0.1.0"
-description = "Desktop control panel for the ESP32 IR blaster"
+description = "Control panel for the ESP32 IR blaster"
 edition = "2021"
 rust-version = "1.77"
 
 [lib]
 name = "ir_remote_lib"
-crate-type = ["lib"]
+# staticlib/cdylib are what the Android and iOS builds link against; rlib keeps
+# `src-tauri/tests/` able to import the crate.
+crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -19,6 +21,14 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["time", "net", "rt", "macros"] }
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
+
+# The OS keychain is Windows-only here.
+#
+# keyring 3.6 implements linux, macos, ios and windows - there is NO Android
+# backend, so depending on it unconditionally breaks the Android build. `auth.rs`
+# provides a no-op on every other platform, which costs nothing today because
+# the firmware performs no authentication.
+[target.'cfg(windows)'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }
 
 [features]

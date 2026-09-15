@@ -5,6 +5,12 @@ Desktop control panel for the ESP32 IR blaster, built to `Instruction.md`.
 Tauri (Rust core + plain-TypeScript webview). All HTTP is issued from Rust, so
 there is no CORS surface and no credential in the frontend.
 
+**There is an Android build too — see [ANDROID.md](ANDROID.md).** It shares the
+entire Rust core and frontend; what differs is where the device address comes
+from, that cleartext HTTP must be explicitly permitted, and that alarms are
+handled by Android's AlarmManager rather than the tokio scheduler, because
+Android kills background timers.
+
 ---
 
 ## ⚠️ Read this first: one firmware change is still needed
@@ -140,10 +146,10 @@ npm install
 npm run mock          # the mock device on :8080, control on :8081
 npm run tauri dev     # the app, pointed at the mock by default
 npm run tauri build   # release binary + MSI installer
-npm test              # frontend tests           (27)
+npm test              # frontend tests           (34)
 npm run check:secrets # rule 7 check on the built bundle and the IPC surface
 npm run verify        # build + frontend tests + secrets check
-cd src-tauri && cargo test   # Rust unit + integration tests   (47)
+cd src-tauri && cargo test   # Rust unit + integration tests   (82)
 ```
 
 **Installer targets: MSI only.** NSIS is deliberately disabled. Its toolchain is
@@ -158,11 +164,14 @@ Rust must be on PATH. If `cargo` is not found, add `%USERPROFILE%\.cargo\bin`.
 
 The target is read once at startup, in this order:
 
-1. the `IR_REMOTE_BASE_URL` **environment variable**
-2. `IR_REMOTE_BASE_URL` in a **`.env` file** — looked for beside the working
+1. an address **saved in the app** — Android only, see [ANDROID.md](ANDROID.md)
+2. the `IR_REMOTE_BASE_URL` **environment variable**
+3. `IR_REMOTE_BASE_URL` in a **`.env` file** — looked for beside the working
    directory, its parent, and the executable, so it is found both under
    `npm run tauri dev` (which runs from `src-tauri/`) and from an installed build
-3. the built-in default, `http://127.0.0.1:8080` — the mock
+4. the value **compiled in** from `IR_REMOTE_BASE_URL` at build time — this is
+   how an APK gets a default, since there is no `.env` inside an installed app
+5. the built-in default, `http://127.0.0.1:8080` — the mock
 
 So the normal way to point at your device is `Application/.env`:
 

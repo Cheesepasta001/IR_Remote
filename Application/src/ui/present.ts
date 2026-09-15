@@ -231,5 +231,28 @@ export function alarmLineFor(a: Alarm): AlarmLine {
  * Every command this device accepts actuates hardware, and `/Power` is a
  * toggle, so an alarm cannot promise the unit ends up on.
  */
+export interface ExactAlarmWarning {
+  /** Empty when there is nothing to say. */
+  text: string;
+  /** Whether to offer the button that opens Android's permission screen. */
+  canRequest: boolean;
+}
+
+/**
+ * Android can withhold exact-alarm permission, in which case the OS batches
+ * alarms and they drift by minutes. Saying nothing would leave the UI promising
+ * an "in 8 h 55 m" countdown it cannot actually keep.
+ */
+export function exactAlarmWarningFor(s: Snapshot): ExactAlarmWarning {
+  if (s.exactAlarms === null || s.exactAlarms === true) {
+    return { text: '', canRequest: false };
+  }
+  return {
+    text:
+      'Exact alarms are not permitted, so Android may fire these minutes late rather than on the minute.',
+    canRequest: true,
+  };
+}
+
 export const ALARM_CAVEAT =
   'Alarms send a command at a time — they cannot guarantee the unit ends up on or off. /Power is a toggle, so if the air conditioner is already running when a Power alarm fires, it switches off instead.';

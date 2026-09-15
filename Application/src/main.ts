@@ -18,6 +18,7 @@ import {
   bannerFor,
   controlStatusFor,
   deviceLineFor,
+  exactAlarmWarningFor,
   parseClock,
   reage,
 } from './ui/present';
@@ -31,6 +32,8 @@ const $ = <T extends HTMLElement>(id: string): T => {
 let snapshot: Snapshot | null = null;
 /** Settings inputs are not overwritten while the user is editing them. */
 let settingsDirty = false;
+/** The address field is not overwritten while the user is typing in it. */
+let deviceDirty = false;
 /** Last offset sent to the core, so we only re-send when it actually changes. */
 let sentTzOffset: number | null = null;
 
@@ -130,17 +133,33 @@ function renderAlarms(s: Snapshot) {
     host.appendChild(row);
   }
 
+  const warning = exactAlarmWarningFor(s);
+  $('exact-warning').hidden = warning.text === '';
+  $('exact-warning-text').textContent = warning.text;
+  $<HTMLButtonElement>('exact-grant').hidden = !warning.canRequest;
+
   $('alarm-caveat').textContent = ALARM_CAVEAT;
 }
 
+const BASE_URL_NOTE: Record<Snapshot['baseUrlSource'], string> = {
+  stored: 'Saved in the app. Change it above — it takes effect on the next poll.',
+  environment: 'Read from the IR_REMOTE_BASE_URL environment variable, which overrides everything else.',
+  dotEnv: 'Read from the .env file at startup. Edit .env and restart to point at a different device.',
+  compiled: 'Compiled in when this build was made. Override it above if the device moved.',
+  default: 'No IR_REMOTE_BASE_URL configured — this is the built-in mock address.',
+};
+
 function renderSettings(s: Snapshot) {
   $('base-url-value').textContent = s.baseUrl;
-  $('base-url-note').textContent =
-    s.baseUrlSource === 'dotEnv'
-      ? 'Read from the .env file at startup. Edit .env and restart to point at a different device.'
-      : s.baseUrlSource === 'environment'
-        ? 'Read from the IR_REMOTE_BASE_URL environment variable, which overrides .env.'
-        : 'No IR_REMOTE_BASE_URL set in the environment or .env — this is the built-in mock address.';
+  $('base-url-note').textContent = BASE_URL_NOTE[s.baseUrlSource];
+
+  // Editable only where there is no .env to edit and no shell to set a
+  // variable in — Android. Desktop keeps one source of truth.
+  const deviceForm = $('device-form');
+  deviceForm.hidden = !s.baseUrlEditable;
+  if (s.baseUrlEditable && !deviceDirty) {
+    $<HTMLInputElement>('base-url-input').value = s.baseUrl;
+  }
 
   if (settingsDirty) return;
   $<HTMLInputElement>('poll-interval').value = String(s.pollIntervalMs);
@@ -225,6 +244,19 @@ function syncTzOffset() {
   });
 }
 
+async function saveBaseUrl(e: Event) {
+  e.preventDefault();
+  const note = $('base-url-note');
+  try {
+    await invoke('set_base_url', {
+      baseUrl: $<HTMLInputElement>('base-url-input').value.trim(),
+    });
+    deviceDirty = false;
+  } catch (err) {
+    note.textContent = String(err);
+  }
+}
+
 async function applySettings(e: Event) {
   e.preventDefault();
   try {
@@ -272,6 +304,16 @@ async function boot() {
   $('settings').addEventListener('submit', applySettings);
   $('creds').addEventListener('submit', saveCredentials);
   $('alarm-form').addEventListener('submit', addAlarm);
+  $('device-form').addEventListener('submit', saveBaseUrl);
+  $('exact-grant').addEventListener('click', () => {
+    // Android only; a no-op elsewhere. The user grants it in system settings.
+    void invoke('request_exact_alarm_permission').catch((err) => {
+      $('alarm-error').textContent = String(err);
+    });
+  });
+  $('base-url-input').addEventListener('input', () => {
+    deviceDirty = true;
+  });
   $('cred-clear').addEventListener('click', async () => {
     await invoke('clear_credentials', {
       username: $<HTMLInputElement>('cred-user').value.trim(),
