@@ -8,12 +8,16 @@
   </head>
   <body>
     <main>
-      <!-- 1. Connection banner -->
+      <!-- 1. Connection banner: connected or not, nothing else -->
       <section id="banner" class="banner tone-idle">
         <div class="banner-row">
           <span id="banner-dot" class="dot"></span>
           <h1 id="banner-label">Connecting</h1>
+          <button id="settings-toggle" class="icon-button" aria-expanded="false"
+                  aria-controls="settings-panel" title="Settings">⚙</button>
         </div>
+        <!-- Empty in normal operation. Only a fatal boot failure writes here,
+             because a blank window is indistinguishable from a quiet device. -->
         <p id="banner-detail" class="detail"></p>
       </section>
 
@@ -35,23 +39,40 @@
         </p>
       </section>
 
-      <!-- 4. Cancel: visually distinct, always enabled -->
-      <section class="card cancel-card">
-        <button id="cancel" class="cancel">Cancel in-flight request <kbd>Esc</kbd></button>
-        <p class="caveat warn" id="cancel-note"></p>
+      <!-- 4. Alarms -->
+      <section class="card">
+        <h2>Alarms <span class="muted">daily</span></h2>
+
+        <form id="alarm-form" class="alarm-form">
+          <label>Time<input id="alarm-time" type="time" required value="07:00" /></label>
+          <label>
+            Sends
+            <select id="alarm-command">
+              <option value="Power">Power (toggle)</option>
+              <option value="Silent">Silent</option>
+              <option value="LowTemp">Temp −</option>
+              <option value="HighTemp">Temp +</option>
+            </select>
+          </label>
+          <button type="submit">Add alarm</button>
+        </form>
+
+        <div id="alarms" class="alarms"></div>
+        <p id="alarm-error" class="caveat warn"></p>
+        <p id="alarm-caveat" class="caveat warn"></p>
       </section>
 
-      <!-- 5. Log pane -->
-      <section class="card">
-        <h2>Log <span class="muted" id="log-count"></span></h2>
-        <div id="log" class="log"></div>
-      </section>
-
-      <!-- 6. Settings -->
-      <section class="card">
+      <!-- 5. Settings, hidden behind the gear in the banner -->
+      <section id="settings-panel" class="card" hidden>
         <h2>Settings</h2>
+
+        <p class="setting-row">
+          <span class="setting-key">Device</span>
+          <span id="base-url-value" class="setting-value">—</span>
+        </p>
+        <p class="caveat" id="base-url-note"></p>
+
         <form id="settings" class="settings">
-          <label>Base URL<input id="base-url" type="text" spellcheck="false" /></label>
           <label>Poll interval (ms)<input id="poll-interval" type="number" min="100" step="100" /></label>
           <label>Command timeout (ms)<input id="command-timeout" type="number" min="100" step="100" /></label>
           <label>Probe timeout (ms)<input id="probe-timeout" type="number" min="100" step="100" /></label>

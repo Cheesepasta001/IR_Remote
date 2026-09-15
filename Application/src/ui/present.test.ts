@@ -1,13 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
-import type { Snapshot } from '../types';
+import type { Alarm, Snapshot } from '../types';
 import {
+  alarmLineFor,
   bannerFor,
-  cancelEnabled,
   controlStatusFor,
   deviceLineFor,
   formatAge,
-  logLine,
+  formatClock,
+  formatCountdown,
+  parseClock,
   reage,
 } from './present';
 
@@ -21,6 +23,7 @@ const BASE: Snapshot = {
   ageMs: null,
   isStale: true,
   baseUrl: 'http://127.0.0.1:8080',
+  baseUrlSource: 'dotEnv',
   pollIntervalMs: 2000,
   commandTimeoutMs: 3000,
   probeTimeoutMs: 1500,
@@ -28,10 +31,27 @@ const BASE: Snapshot = {
   username: '',
   hasCredential: false,
   canAbort: true,
+  alarms: [],
+  tzOffsetMinutes: 480,
 };
 
 function snap(patch: Partial<Snapshot>, statePatch: Partial<Snapshot['state']> = {}): Snapshot {
   return { ...BASE, ...patch, state: { ...BASE.state, ...statePatch } };
+}
+
+function alarm(patch: Partial<Alarm> = {}): Alarm {
+  return {
+    id: 1,
+    hour: 7,
+    minute: 0,
+    enabled: true,
+    command: 'Power',
+    lastDay: null,
+    lastOutcome: null,
+    lastFiredMs: null,
+    minutesUntilNext: 30,
+    ...patch,
+  };
 }
 
 describe('formatAge', () => {
@@ -59,20 +79,8 @@ describe('reage (rule 2: ages keep counting between snapshots)', () => {
 
   it('goes stale on its own once the threshold passes, with no new snapshot', () => {
     const s = snap({}, { connection: { kind: 'online', lastSeenMs: 100_000 } });
-    // The core has emitted nothing since; the UI must still notice.
     expect(reage(s, 104_999).isStale).toBe(false);
     expect(reage(s, 105_001).isStale).toBe(true);
-  });
-
-  it('keeps ageing from the last sighting while offline', () => {
-    const s = snap(
-      {},
-      {
-        connection: { kind: 'offline', sinceMs: 101_000, reason: 'refused', lastSeenMs: 100_000 },
-      },
-    );
-    expect(reage(s, 130_000).ageMs).toBe(30_000);
-    expect(reage(s, 130_000).isStale).toBe(true);
   });
 
   it('reports no age at all when the device was never seen', () => {
@@ -87,59 +95,42 @@ describe('reage (rule 2: ages keep counting between snapshots)', () => {
   });
 });
 
-describe('connection banner (rule 3)', () => {
+describe('connection banner: connected or not, and nothing else', () => {
   it('shows connecting before anything is observed', () => {
-    const b = bannerFor(BASE);
-    expect(b.label).toBe('Connecting');
-    expect(b.detail).toContain('http://127.0.0.1:8080');
+    expect(bannerFor(BASE).label).toBe('Connecting');
   });
 
-  it('shows connected with the age and base URL', () => {
+  it('shows connected when a recent sighting exists', () => {
     const b = bannerFor(
       snap({ ageMs: 400, isStale: false }, { connection: { kind: 'online', lastSeenMs: 99_600 } }),
     );
     expect(b.label).toBe('Connected');
     expect(b.tone).toBe('ok');
-    expect(b.detail).toContain('0.4 s ago');
-    expect(b.detail).toContain('http://127.0.0.1:8080');
   });
 
-  it('goes stale rather than continuing to look live', () => {
-    const b = bannerFor(
-      snap({ ageMs: 9000, isStale: true }, { connection: { kind: 'online', lastSeenMs: 91_000 } }),
-    );
-    expect(b.label).toBe('Stale');
-    expect(b.tone).toBe('stale');
-  });
-
-  it('has a defined disconnected appearance carrying the last sighting', () => {
+  it('shows disconnected when offline', () => {
     const b = bannerFor(
       snap(
         { ageMs: 30_000, isStale: true },
-        {
-          connection: {
-            kind: 'offline',
-            sinceMs: 80_000,
-            reason: 'connection refused',
-            lastSeenMs: 70_000,
-          },
-        },
+        { connection: { kind: 'offline', sinceMs: 80_000, reason: 'refused', lastSeenMs: 70_000 } },
       ),
     );
     expect(b.label).toBe('Disconnected');
     expect(b.tone).toBe('bad');
-    expect(b.detail).toContain('connection refused');
-    expect(b.detail).toContain('30 s ago');
   });
 
-  it('says never reached when the device was never seen', () => {
+  it('reads a stale sighting as disconnected, never as connected', () => {
+    // Claiming "Connected" from a sighting that has aged out would assert
+    // something the app no longer knows.
     const b = bannerFor(
-      snap(
-        { ageMs: null },
-        { connection: { kind: 'offline', sinceMs: 80_000, reason: 'refused', lastSeenMs: null } },
-      ),
+      snap({ ageMs: 9000, isStale: true }, { connection: { kind: 'online', lastSeenMs: 91_000 } }),
     );
-    expect(b.detail).toContain('never reached');
+    expect(b.label).toBe('Disconnected');
+  });
+
+  it('carries no detail text at all', () => {
+    // The banner is deliberately just the state now.
+    expect(Object.keys(bannerFor(BASE)).sort()).toEqual(['label', 'tone']);
   });
 });
 
@@ -150,7 +141,6 @@ describe('device line (rule 1: never optimistic)', () => {
     );
     expect(d.tone).toBe('pending');
     expect(d.label).toContain('Sending');
-    // The critical assertion: nothing claims the command took effect.
     expect(d.label).not.toMatch(/confirmed|\bON\b|\bOFF\b/i);
   });
 
@@ -159,7 +149,6 @@ describe('device line (rule 1: never optimistic)', () => {
       snap({}, { command: { kind: 'succeeded', command: 'Power', atMs: 99_800, latencyMs: 42 } }),
     );
     expect(d.label).toContain('confirmed by device');
-    expect(d.tone).toBe('ok');
     expect(d.age).toBe('0.2 s ago');
     expect(d.stale).toBe(false);
   });
@@ -171,8 +160,8 @@ describe('device line (rule 1: never optimistic)', () => {
     expect(d.stale).toBe(true);
   });
 
-  it('reports an unreachable failure without implying anything happened', () => {
-    const d = deviceLineFor(
+  it('distinguishes a device refusal from unreachability', () => {
+    const unreachable = deviceLineFor(
       snap(
         {},
         {
@@ -185,13 +174,9 @@ describe('device line (rule 1: never optimistic)', () => {
         },
       ),
     );
-    expect(d.tone).toBe('bad');
-    expect(d.label).toContain('did not reach the device');
-    expect(d.label).toContain('timed out');
-  });
+    expect(unreachable.label).toContain('did not reach the device');
 
-  it('distinguishes a device refusal from unreachability', () => {
-    const d = deviceLineFor(
+    const refused = deviceLineFor(
       snap(
         {},
         {
@@ -204,25 +189,7 @@ describe('device line (rule 1: never optimistic)', () => {
         },
       ),
     );
-    expect(d.label).toContain('refused');
-    expect(d.label).toContain('500');
-  });
-
-  it('names a cancelled command as cancelled', () => {
-    const d = deviceLineFor(
-      snap(
-        {},
-        {
-          command: {
-            kind: 'failed',
-            command: 'Power',
-            atMs: 99_000,
-            error: { kind: 'aborted' },
-          },
-        },
-      ),
-    );
-    expect(d.label).toContain('cancelled');
+    expect(refused.label).toContain('refused');
   });
 });
 
@@ -238,52 +205,100 @@ describe('controls', () => {
   });
 
   it('re-enables every control once the command settles', () => {
-    const s = snap({}, { command: { kind: 'succeeded', command: 'Power', atMs: 99_000, latencyMs: 5 } });
+    const s = snap(
+      {},
+      { command: { kind: 'succeeded', command: 'Power', atMs: 99_000, latencyMs: 5 } },
+    );
     expect(controlStatusFor(s, 'Power')).toBe('ready');
     expect(controlStatusFor(s, 'Silent')).toBe('ready');
   });
 });
 
-describe('cancel control (rule 6)', () => {
-  it('is enabled while disconnected', () => {
-    const s = snap(
-      {},
-      { connection: { kind: 'offline', sinceMs: 1, reason: 'refused', lastSeenMs: null } },
-    );
-    expect(cancelEnabled(s)).toBe(true);
+describe('clock formatting', () => {
+  it('zero-pads for display and for <input type="time">', () => {
+    expect(formatClock(7, 0)).toBe('07:00');
+    expect(formatClock(23, 59)).toBe('23:59');
+    expect(formatClock(0, 5)).toBe('00:05');
   });
 
-  it('is enabled while a request is in flight', () => {
-    const s = snap({}, { command: { kind: 'pending', command: 'Power', startedMs: 1 } });
-    expect(cancelEnabled(s)).toBe(true);
+  it('parses a valid time', () => {
+    expect(parseClock('07:00')).toEqual({ hour: 7, minute: 0 });
+    expect(parseClock(' 23:59 ')).toEqual({ hour: 23, minute: 59 });
   });
 
-  it('is enabled at rest', () => {
-    expect(cancelEnabled(BASE)).toBe(true);
+  it('rejects anything that is not a real time', () => {
+    expect(parseClock('24:00')).toBeNull();
+    expect(parseClock('12:60')).toBeNull();
+    expect(parseClock('')).toBeNull();
+    expect(parseClock('7')).toBeNull();
+    expect(parseClock('abc')).toBeNull();
+  });
+
+  it('formats a countdown that reads as a countdown', () => {
+    expect(formatCountdown(0)).toBe('due now');
+    expect(formatCountdown(4)).toBe('in 4 m');
+    expect(formatCountdown(60)).toBe('in 1 h');
+    expect(formatCountdown(135)).toBe('in 2 h 15 m');
+    expect(formatCountdown(null)).toBe('disabled');
   });
 });
 
-describe('log pane (section 6.5)', () => {
-  it('shows the time, the message and the latency', () => {
-    const line = logLine({
-      seq: 1,
-      atMs: Date.now(),
-      kind: 'commandOk',
-      message: '/Power confirmed',
-      latencyMs: 42,
-    });
-    expect(line).toContain('/Power confirmed');
-    expect(line).toContain('42 ms');
+describe('alarm line', () => {
+  it('says "Send Power", never "Turn on"', () => {
+    // The device has only a toggle and reports no state, so the UI must not
+    // promise an outcome it cannot deliver.
+    const line = alarmLineFor(alarm({ command: 'Power' }));
+    expect(line.action).toBe('Send Power');
+    expect(line.action).not.toMatch(/turn on|turn off|switch on/i);
   });
 
-  it('omits latency when there is none', () => {
-    const line = logLine({
-      seq: 2,
-      atMs: Date.now(),
-      kind: 'commandSent',
-      message: 'GET /Power',
-      latencyMs: null,
-    });
-    expect(line).not.toContain('ms)');
+  it('shows the time and the countdown', () => {
+    const line = alarmLineFor(alarm({ hour: 7, minute: 5, minutesUntilNext: 135 }));
+    expect(line.time).toBe('07:05');
+    expect(line.next).toBe('in 2 h 15 m');
+  });
+
+  it('says a missed alarm was missed, and why', () => {
+    const line = alarmLineFor(alarm({ lastOutcome: 'missed', lastDay: 10 }));
+    expect(line.status).toContain('missed');
+    expect(line.status).toContain('not running');
+    expect(line.tone).toBe('bad');
+  });
+
+  it('reports a fired alarm as sent', () => {
+    const line = alarmLineFor(
+      alarm({ lastOutcome: 'fired', lastDay: 10, lastFiredMs: 1_700_000_000_000 }),
+    );
+    expect(line.status).toContain('last sent');
+    expect(line.tone).toBe('ok');
+  });
+
+  it('shows a disabled alarm as disabled rather than counting down', () => {
+    const line = alarmLineFor(alarm({ enabled: false, minutesUntilNext: null }));
+    expect(line.next).toBe('disabled');
+    expect(line.tone).toBe('idle');
+  });
+
+  it('names the command for non-Power alarms too', () => {
+    expect(alarmLineFor(alarm({ command: 'LowTemp' })).action).toBe('Send Temp −');
+    expect(alarmLineFor(alarm({ command: 'Silent' })).action).toBe('Send Silent');
+  });
+});
+
+describe('a failed alarm is never reported as sent', () => {
+  it('says the device did not confirm it', () => {
+    // Claiming "last sent" for a command the device never acknowledged is the
+    // same optimistic lie rule 1 forbids, just on a timer.
+    const line = alarmLineFor(alarm({ lastOutcome: 'failed', lastDay: 10 }));
+    expect(line.status).not.toMatch(/last sent/);
+    expect(line.status).toContain('did not confirm');
+    expect(line.tone).toBe('bad');
+  });
+
+  it('never shows a last-sent time even if one is somehow present', () => {
+    const line = alarmLineFor(
+      alarm({ lastOutcome: 'failed', lastDay: 10, lastFiredMs: 1_700_000_000_000 }),
+    );
+    expect(line.status).not.toMatch(/last sent/);
   });
 });

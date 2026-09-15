@@ -46,24 +46,117 @@ pub const DEFAULT_BASE_URL: &str = "http://127.0.0.1:8080";
 /// One-step switch between the mock and the real device (see README).
 pub const BASE_URL_ENV: &str = "IR_REMOTE_BASE_URL";
 
+/// Where the base URL came from, so the UI can say so instead of implying the
+/// value is editable when it is not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BaseUrlSource {
+    /// A process environment variable.
+    Environment,
+    /// A `.env` file next to the app.
+    DotEnv,
+    /// Nothing configured; the built-in mock address.
+    Default,
+}
+
 impl Config {
-    /// Read the target from the environment, falling back to the mock.
+    /// Read the target, in order: the process environment, then a `.env` file,
+    /// then the built-in default (the mock).
     ///
-    /// An unparseable value is rejected rather than silently ignored: pointing
-    /// the app at a device it cannot address should be loud.
-    pub fn from_env() -> Config {
+    /// An unparseable value is reported and skipped rather than silently
+    /// accepted: pointing the app at an address it cannot resolve should be
+    /// loud, not a mystery timeout later.
+    pub fn from_env() -> (Config, BaseUrlSource) {
         let mut config = Config::default();
-        if let Ok(raw) = std::env::var(BASE_URL_ENV) {
-            let trimmed = raw.trim();
-            if !trimmed.is_empty() {
-                match host_port(trimmed) {
-                    Ok(_) => config.base_url = trimmed.to_string(),
-                    Err(e) => eprintln!("{BASE_URL_ENV} ignored: {e}"),
-                }
-            }
+
+        if let Some(v) = usable(std::env::var(BASE_URL_ENV).ok(), "environment") {
+            config.base_url = v;
+            return (config, BaseUrlSource::Environment);
         }
-        config
+
+        if let Some(v) = usable(dot_env_value(BASE_URL_ENV), ".env") {
+            config.base_url = v;
+            return (config, BaseUrlSource::DotEnv);
+        }
+
+        (config, BaseUrlSource::Default)
     }
+}
+
+fn usable(raw: Option<String>, origin: &str) -> Option<String> {
+    let value = raw?;
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    match host_port(trimmed) {
+        Ok(_) => Some(trimmed.to_string()),
+        Err(e) => {
+            eprintln!("{BASE_URL_ENV} from {origin} ignored: {e}");
+            None
+        }
+    }
+}
+
+/// Look for `.env` beside the working directory, its parent, and the
+/// executable. `tauri dev` runs from `src-tauri/`, while a release binary runs
+/// from wherever it was installed, so all three are worth checking.
+fn dot_env_candidates() -> Vec<std::path::PathBuf> {
+    let mut paths = Vec::new();
+    if let Ok(cwd) = std::env::current_dir() {
+        paths.push(cwd.join(".env"));
+        if let Some(parent) = cwd.parent() {
+            paths.push(parent.join(".env"));
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            paths.push(dir.join(".env"));
+        }
+    }
+    paths
+}
+
+fn dot_env_value(key: &str) -> Option<String> {
+    for path in dot_env_candidates() {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if let Some(v) = parse_dot_env(&text, key) {
+            return Some(v);
+        }
+    }
+    None
+}
+
+/// Minimal `.env` parsing: `KEY=value`, `#` comments, optional surrounding
+/// quotes, `export ` prefix tolerated. Deliberately not a full dotenv
+/// implementation - one key is read and nothing is exported into the process.
+fn parse_dot_env(text: &str, key: &str) -> Option<String> {
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let line = line.strip_prefix("export ").unwrap_or(line);
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
+        if k.trim() != key {
+            continue;
+        }
+        let v = v.trim();
+        // Strip one layer of matching quotes, then any trailing comment.
+        let v = if (v.starts_with('"') && v.ends_with('"') && v.len() >= 2)
+            || (v.starts_with('\'') && v.ends_with('\'') && v.len() >= 2)
+        {
+            &v[1..v.len() - 1]
+        } else {
+            v.split('#').next().unwrap_or(v).trim()
+        };
+        return Some(v.to_string());
+    }
+    None
 }
 
 impl Default for Config {
@@ -161,25 +254,10 @@ impl ApiClient {
             return Err(Failure::DeviceError(format!("HTTP {} - {}", status.as_u16(), detail)));
         }
 
-        let reply: DeviceReply = serde_json::from_str(&body)
-            .map_err(|e| Failure::BadResponse(format!("{e} (body: {})", truncate(&body))))?;
-
-        if reply.result != "Success" {
-            let detail = reply.error.unwrap_or_else(|| reply.result.clone());
-            return Err(Failure::DeviceError(detail));
+        match parse_body(&body, command)? {
+            Verdict::Success => Ok(CommandOutcome { latency_ms }),
+            Verdict::Failed(detail) => Err(Failure::DeviceError(detail)),
         }
-
-        // Guard against a reply that confirms a different command than we sent.
-        if let Some(echo) = reply.command.as_deref() {
-            let expected = command.path().trim_start_matches('/');
-            if echo != expected {
-                return Err(Failure::BadResponse(format!(
-                    "asked for {expected}, device confirmed {echo}"
-                )));
-            }
-        }
-
-        Ok(CommandOutcome { latency_ms })
     }
 
     /// Reachability probe.
@@ -206,6 +284,57 @@ impl ApiClient {
                 self.config.timeouts.probe.as_millis()
             )),
         }
+    }
+}
+
+enum Verdict {
+    Success,
+    Failed(String),
+}
+
+/// Read a 2xx body from the device.
+///
+/// Two shapes are accepted, because the firmware and Instruction.md section 1
+/// do not agree on one:
+///
+///  - the JSON contract, `{"result":"Success","command":"Power"}`
+///  - a bare word, `success` or `fail`, which is what `Main.ino` writes today
+///    via `client.println("success")`
+///
+/// Anything else is a `BadResponse` - it is never optimistically read as
+/// success (rule 1). Matching is case-insensitive and ignores trailing CRLF,
+/// since `println` appends one.
+fn parse_body(body: &str, command: Command) -> Result<Verdict, Failure> {
+    let trimmed = body.trim();
+
+    // Shape 1: the JSON contract.
+    if let Ok(reply) = serde_json::from_str::<DeviceReply>(trimmed) {
+        if !reply.result.eq_ignore_ascii_case("success") {
+            let detail = reply.error.unwrap_or(reply.result);
+            return Ok(Verdict::Failed(detail));
+        }
+        // Guard against a reply that confirms a different command than we sent.
+        if let Some(echo) = reply.command.as_deref() {
+            let expected = command.path().trim_start_matches('/');
+            if !echo.eq_ignore_ascii_case(expected) {
+                return Err(Failure::BadResponse(format!(
+                    "asked for {expected}, device confirmed {echo}"
+                )));
+            }
+        }
+        return Ok(Verdict::Success);
+    }
+
+    // Shape 2: a bare word. The firmware sends no command name with it, so
+    // there is nothing to cross-check - see the note in README about what that
+    // costs when more than one request is in flight.
+    match trimmed.to_ascii_lowercase().as_str() {
+        "success" => Ok(Verdict::Success),
+        "fail" => Ok(Verdict::Failed("device reported 'fail'".to_string())),
+        _ => Err(Failure::BadResponse(format!(
+            "unrecognised reply: {}",
+            truncate(trimmed)
+        ))),
     }
 }
 
@@ -299,6 +428,122 @@ mod tests {
     #[test]
     fn redact_leaves_ordinary_messages_alone() {
         assert_eq!(redact("connect failed: refused"), "connect failed: refused");
+    }
+
+    fn verdict(body: &str) -> Result<bool, Failure> {
+        parse_body(body, Command::Power).map(|v| matches!(v, Verdict::Success))
+    }
+
+    #[test]
+    fn accepts_the_json_contract() {
+        assert_eq!(verdict(r#"{"result":"Success","command":"Power"}"#).unwrap(), true);
+    }
+
+    #[test]
+    fn accepts_the_firmwares_bare_word() {
+        // Main.ino writes client.println("success") -> "success\r\n".
+        assert_eq!(verdict("success\r\n").unwrap(), true);
+        assert_eq!(verdict("SUCCESS").unwrap(), true);
+    }
+
+    #[test]
+    fn a_bare_fail_is_a_device_error_not_a_success() {
+        match parse_body("fail\r\n", Command::Power).unwrap() {
+            Verdict::Failed(d) => assert!(d.contains("fail")),
+            Verdict::Success => panic!("'fail' must never read as success"),
+        }
+    }
+
+    #[test]
+    fn an_unrecognised_body_is_never_success() {
+        // Rule 1: anything we cannot positively read as confirmation is a
+        // failure, not an optimistic pass.
+        assert!(matches!(
+            verdict("Sending Power Signal..."),
+            Err(Failure::BadResponse(_))
+        ));
+        assert!(matches!(verdict(""), Err(Failure::BadResponse(_))));
+        assert!(matches!(verdict("<html>404</html>"), Err(Failure::BadResponse(_))));
+    }
+
+    #[test]
+    fn a_switch_fallthrough_body_is_rejected() {
+        // A C++ `switch` with no `break` writes every case in turn. If
+        // socketHandler() ships like that, one command produces five JSON
+        // objects concatenated - which is not valid JSON and must not be read
+        // as a success just because the first line happens to say "Success".
+        let fallthrough = concat!(
+            "{\"result\":\"Success\",\"command\":\"Power\"}\r\n",
+            "{\"result\":\"Success\",\"command\":\"Silent\"}\r\n",
+            "{\"result\":\"Success\",\"command\":\"High_Temp\"}\r\n",
+            "{\"result\":\"Success\",\"command\":\"Low_Temp\"}\r\n",
+            "{\"result\":\"Fail\",\"command\":\"Fail\"}\r\n",
+        );
+        assert!(
+            matches!(verdict(fallthrough), Err(Failure::BadResponse(_))),
+            "a fall-through reply must not confirm anything"
+        );
+    }
+
+    #[test]
+    fn json_echoing_the_wrong_command_is_rejected() {
+        assert!(matches!(
+            parse_body(r#"{"result":"Success","command":"Silent"}"#, Command::Power),
+            Err(Failure::BadResponse(_))
+        ));
+    }
+
+    #[test]
+    fn dot_env_reads_a_plain_assignment() {
+        let text = "IR_REMOTE_BASE_URL=http://192.168.0.102\n";
+        assert_eq!(
+            parse_dot_env(text, "IR_REMOTE_BASE_URL").as_deref(),
+            Some("http://192.168.0.102")
+        );
+    }
+
+    #[test]
+    fn dot_env_ignores_comments_blank_lines_and_other_keys() {
+        let text = "# target\n\nOTHER=nope\nIR_REMOTE_BASE_URL = http://10.0.0.5:80 \n";
+        assert_eq!(
+            parse_dot_env(text, "IR_REMOTE_BASE_URL").as_deref(),
+            Some("http://10.0.0.5:80")
+        );
+        assert_eq!(parse_dot_env(text, "MISSING"), None);
+    }
+
+    #[test]
+    fn dot_env_strips_quotes_and_export() {
+        assert_eq!(
+            parse_dot_env("export IR_REMOTE_BASE_URL=\"http://a.b\"\n", "IR_REMOTE_BASE_URL")
+                .as_deref(),
+            Some("http://a.b")
+        );
+        assert_eq!(
+            parse_dot_env("IR_REMOTE_BASE_URL='http://c.d'\n", "IR_REMOTE_BASE_URL").as_deref(),
+            Some("http://c.d")
+        );
+    }
+
+    #[test]
+    fn dot_env_drops_a_trailing_comment() {
+        assert_eq!(
+            parse_dot_env("IR_REMOTE_BASE_URL=http://a.b # the device\n", "IR_REMOTE_BASE_URL")
+                .as_deref(),
+            Some("http://a.b")
+        );
+    }
+
+    #[test]
+    fn an_unusable_value_is_skipped_not_accepted() {
+        // A junk base URL must not become the target - it would fail every
+        // request later with no explanation.
+        assert_eq!(usable(Some("not a url".into()), "test"), None);
+        assert_eq!(usable(Some("   ".into()), "test"), None);
+        assert_eq!(
+            usable(Some(" http://192.168.0.102 ".into()), "test").as_deref(),
+            Some("http://192.168.0.102")
+        );
     }
 
     #[test]

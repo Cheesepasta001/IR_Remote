@@ -31,6 +31,12 @@ enum Behaviour {
     Slow(u64),
     /// Confirm a different command than the one requested.
     WrongEcho,
+    /// Valid HTTP, but a bare word for a body - what Main.ino will send once it
+    /// writes headers, since it replies `client.println("success")`.
+    PlainText(&'static str),
+    /// No HTTP framing at all: a bare line and the socket left open. This is
+    /// Main.ino exactly as it stands today.
+    NoHttpFraming,
 }
 
 struct TestServer {
@@ -43,6 +49,22 @@ struct TestServer {
 impl TestServer {
     fn hits(&self) -> usize {
         self.hits.load(Ordering::SeqCst)
+    }
+
+    /// Wait for the accept loop to catch up.
+    ///
+    /// A bare TCP connect completes in the kernel the moment the handshake
+    /// lands, so `probe()` can return before the server thread has called
+    /// `accept()`. Asserting the count immediately is a race; this waits for it.
+    fn wait_for_hits(&self, want: usize, timeout: Duration) -> usize {
+        let deadline = std::time::Instant::now() + timeout;
+        while std::time::Instant::now() < deadline {
+            if self.hits() >= want {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        self.hits()
     }
 }
 
@@ -92,6 +114,25 @@ fn spawn(behaviour: Behaviour) -> TestServer {
                 }
                 Behaviour::Status(code, body) => {
                     let _ = write_json(&mut stream, code, body);
+                }
+                Behaviour::PlainText(word) => {
+                    // println appends CRLF, so the body carries it.
+                    let body = format!("{word}\r\n");
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(head.as_bytes());
+                    let _ = stream.write_all(body.as_bytes());
+                    let _ = stream.flush();
+                }
+                Behaviour::NoHttpFraming => {
+                    // Exactly client.println("success"): no status line, no
+                    // headers, no blank line. Then the socket is left open,
+                    // because the firmware never calls client.stop().
+                    let _ = stream.write_all(b"success\r\n");
+                    let _ = stream.flush();
+                    std::thread::sleep(Duration::from_secs(20));
                 }
             }
         }
@@ -185,6 +226,61 @@ async fn a_reply_confirming_the_wrong_command_is_rejected() {
     }
 }
 
+// ------------------------------------------- the firmware's own shapes ----
+
+#[tokio::test]
+async fn a_bare_success_body_over_http_is_accepted() {
+    // Main.ino replies client.println("success"). Once it also writes headers,
+    // this is what arrives, and the app must accept it.
+    let s = spawn(Behaviour::PlainText("success"));
+    let c = client_for(&s.base_url, 2_000);
+
+    c.send_command(Command::Power, None)
+        .await
+        .expect("a bare 'success' body must confirm the command");
+    assert_eq!(s.hits(), 1);
+}
+
+#[tokio::test]
+async fn a_bare_fail_body_is_a_device_error() {
+    let s = spawn(Behaviour::PlainText("fail"));
+    let c = client_for(&s.base_url, 2_000);
+
+    match c.send_command(Command::Power, None).await {
+        Err(Failure::DeviceError(d)) => assert!(d.contains("fail"), "got {d}"),
+        other => panic!("expected DeviceError, got {other:?}", other = other.err()),
+    }
+}
+
+#[tokio::test]
+async fn the_serial_chatter_is_not_mistaken_for_confirmation() {
+    // The firmware also writes "Sending Power Signal..." - to Serial, not to the
+    // client. If it ever reached the socket, it must not read as success.
+    let s = spawn(Behaviour::PlainText("Sending Power Signal..."));
+    let c = client_for(&s.base_url, 2_000);
+
+    match c.send_command(Command::Power, None).await {
+        Err(Failure::BadResponse(_)) => {}
+        other => panic!("expected BadResponse, got {other:?}", other = other.err()),
+    }
+}
+
+#[tokio::test]
+async fn a_reply_without_http_framing_is_never_read_as_success() {
+    // Main.ino as it stands today: `success\r\n` with no status line and no
+    // headers is HTTP/0.9, which no HTTP client will parse. The command fired
+    // on the device, but the app cannot know that - and must not pretend it can.
+    let s = spawn(Behaviour::NoHttpFraming);
+    let c = client_for(&s.base_url, 1_000);
+
+    let result = c.send_command(Command::Power, None).await;
+    assert!(
+        result.is_err(),
+        "an unparseable reply must never confirm a command"
+    );
+    assert_eq!(s.hits(), 1, "and it must not be retried");
+}
+
 // ------------------------------------------------- rule 4: timeouts -------
 
 #[tokio::test]
@@ -256,7 +352,7 @@ async fn the_probe_succeeds_without_sending_a_request() {
     // connection and closes it, so the server sees a connection but the app has
     // sent no command. `hits` counts accepted connections, so 1 here means the
     // handshake happened; what matters is that no HTTP request was written.
-    assert_eq!(s.hits(), 1);
+    assert_eq!(s.wait_for_hits(1, Duration::from_secs(2)), 1);
     assert!(
         s.last_auth.lock().unwrap().is_none(),
         "the probe must not send headers"
@@ -333,23 +429,32 @@ async fn no_credential_means_no_auth_header() {
 
 #[test]
 fn the_env_var_switches_the_target() {
+    use ir_remote_lib::api_client::BaseUrlSource;
+
     // Serialised implicitly: this is the only test touching this variable.
     std::env::set_var("IR_REMOTE_BASE_URL", "http://192.168.0.102");
-    assert_eq!(Config::from_env().base_url, "http://192.168.0.102");
+    let (config, source) = Config::from_env();
+    assert_eq!(config.base_url, "http://192.168.0.102");
+    assert_eq!(source, BaseUrlSource::Environment);
 
-    std::env::set_var("IR_REMOTE_BASE_URL", "   ");
-    assert_eq!(
-        Config::from_env().base_url,
-        "http://127.0.0.1:8080",
-        "blank must fall back to the mock"
-    );
-
-    std::env::set_var("IR_REMOTE_BASE_URL", "not a url");
-    assert_eq!(
-        Config::from_env().base_url,
-        "http://127.0.0.1:8080",
-        "junk must fall back rather than produce an unusable client"
-    );
+    // Blank and junk must not become the target. They fall through to the next
+    // source - which may legitimately be a .env file sitting beside the project,
+    // so assert what must NOT happen rather than pinning one exact fallback.
+    for bad in ["   ", "not a url"] {
+        std::env::set_var("IR_REMOTE_BASE_URL", bad);
+        let (config, source) = Config::from_env();
+        assert_ne!(
+            config.base_url, bad,
+            "an unusable value must never become the target"
+        );
+        assert_ne!(
+            source,
+            BaseUrlSource::Environment,
+            "an unusable env var must not be reported as the source"
+        );
+        // Whatever we did fall back to has to be addressable.
+        assert!(ir_remote_lib::api_client::host_port(&config.base_url).is_ok());
+    }
 
     std::env::remove_var("IR_REMOTE_BASE_URL");
 }

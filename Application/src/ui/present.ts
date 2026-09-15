@@ -6,10 +6,9 @@
  *  - rule 1: a pending command NEVER renders as its new value
  *  - rule 2: every displayed value carries its age, and goes visibly stale
  *  - rule 3: disconnected is a defined appearance, not an error toast
- *  - rule 6: the cancel control is never reported as disabled
  */
 
-import type { Command, CommandState, LogEntry, Snapshot } from '../types';
+import type { Alarm, Command, CommandState, Snapshot } from '../types';
 
 export type Tone = 'ok' | 'pending' | 'bad' | 'stale' | 'idle';
 
@@ -38,7 +37,6 @@ export function reage(s: Snapshot, nowMs: number): Snapshot {
 export interface Banner {
   label: string;
   tone: Tone;
-  detail: string;
 }
 
 export interface DeviceLine {
@@ -58,51 +56,23 @@ export function formatAge(ms: number | null): string | null {
   return `${Math.floor(ms / 3_600_000)} h ago`;
 }
 
-export function formatLatency(ms: number | null): string {
-  if (ms === null || ms === undefined) return '';
-  return `${ms} ms`;
-}
-
-/** Rule 3: connection is a first-class, always-rendered state. */
+/**
+ * Rule 3: connection is a first-class, always-rendered state.
+ *
+ * Connected or not, and nothing else. A stale reading counts as NOT connected:
+ * the last sighting has aged past the threshold, so claiming "Connected" would
+ * be asserting something the app no longer knows.
+ */
 export function bannerFor(s: Snapshot): Banner {
   const c = s.state.connection;
 
-  if (c.kind === 'unknown') {
-    return {
-      label: 'Connecting',
-      tone: 'idle',
-      detail: `no reply yet from ${s.baseUrl}`,
-    };
-  }
-
-  if (c.kind === 'offline') {
-    const seen = formatAge(s.ageMs);
-    return {
-      label: 'Disconnected',
-      tone: 'bad',
-      detail: seen
-        ? `${c.reason} · last seen ${seen}`
-        : `${c.reason} · never reached`,
-    };
-  }
-
-  // Online, but the last sighting has aged out: do not present it as live.
-  if (s.isStale) {
-    return {
-      label: 'Stale',
-      tone: 'stale',
-      detail: `no confirmation for ${formatAge(s.ageMs)} · ${s.baseUrl}`,
-    };
-  }
-
-  return {
-    label: 'Connected',
-    tone: 'ok',
-    detail: `reachable ${formatAge(s.ageMs)} · ${s.baseUrl}`,
-  };
+  if (c.kind === 'unknown') return { label: 'Connecting', tone: 'idle' };
+  if (c.kind === 'offline') return { label: 'Disconnected', tone: 'bad' };
+  if (s.isStale) return { label: 'Disconnected', tone: 'bad' };
+  return { label: 'Connected', tone: 'ok' };
 }
 
-function labelOf(command: Command): string {
+export function labelOf(command: Command): string {
   switch (command) {
     case 'Power':
       return 'Power';
@@ -189,34 +159,77 @@ export function controlStatusFor(s: Snapshot, command: Command): ControlStatus {
   return c.command === command ? 'pending' : 'blocked';
 }
 
-/**
- * Rule 6: the cancel control is never disabled - not while a request is in
- * flight, not while disconnected, not while another control is pending.
- *
- * The guarantee comes from the core (`AppState::can_abort`), which is the only
- * place that decides policy. The view renders the answer; it does not invent it.
- */
-export function cancelEnabled(s: Snapshot): boolean {
-  return s.canAbort;
+// ------------------------------------------------------------- alarms ----
+
+/** `07:05`, zero-padded, for both display and the <input type="time"> value. */
+export function formatClock(hour: number, minute: number): string {
+  return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
 }
 
-export function logLine(e: LogEntry): string {
-  const t = new Date(e.atMs).toLocaleTimeString();
-  const latency = e.latencyMs !== null ? ` (${formatLatency(e.latencyMs)})` : '';
-  return `${t}  ${e.message}${latency}`;
+/** Parse an <input type="time"> value. Returns null if it is not a valid time. */
+export function parseClock(value: string): { hour: number; minute: number } | null {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(value.trim());
+  if (!m) return null;
+  const hour = Number(m[1]);
+  const minute = Number(m[2]);
+  if (!Number.isInteger(hour) || !Number.isInteger(minute)) return null;
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+  return { hour, minute };
 }
 
-export function toneForLog(kind: LogEntry['kind']): Tone {
-  switch (kind) {
-    case 'commandOk':
-    case 'probeOk':
-      return 'ok';
-    case 'commandFail':
-    case 'probeFail':
-      return 'bad';
-    case 'commandSent':
-      return 'pending';
-    default:
-      return 'idle';
+/** "in 2 h 15 m", "in 4 m", "now". */
+export function formatCountdown(minutes: number | null): string {
+  if (minutes === null) return 'disabled';
+  if (minutes <= 0) return 'due now';
+  if (minutes < 60) return `in ${minutes} m`;
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return m === 0 ? `in ${h} h` : `in ${h} h ${m} m`;
+}
+
+export interface AlarmLine {
+  time: string;
+  /** Deliberately "Send Power", never "Turn on" - see types.ts. */
+  action: string;
+  next: string;
+  status: string;
+  tone: Tone;
+}
+
+export function alarmLineFor(a: Alarm): AlarmLine {
+  let status = 'never fired';
+  let tone: Tone = 'idle';
+
+  if (a.lastOutcome === 'fired') {
+    status = a.lastFiredMs
+      ? `last sent ${new Date(a.lastFiredMs).toLocaleString()}`
+      : 'last sent today';
+    tone = 'ok';
+  } else if (a.lastOutcome === 'failed') {
+    // Sent at the right time, but never confirmed. Saying "sent" here would
+    // claim something the device never acknowledged.
+    status = 'tried, but the device did not confirm it';
+    tone = 'bad';
+  } else if (a.lastOutcome === 'missed') {
+    // Being explicit matters: the user must not assume it ran.
+    status = 'missed — the app was not running at that time';
+    tone = 'bad';
   }
+
+  return {
+    time: formatClock(a.hour, a.minute),
+    action: `Send ${labelOf(a.command)}`,
+    next: a.enabled ? formatCountdown(a.minutesUntilNext) : 'disabled',
+    status,
+    tone: a.enabled ? tone : 'idle',
+  };
 }
+
+/**
+ * The standing warning under the alarm list.
+ *
+ * Every command this device accepts actuates hardware, and `/Power` is a
+ * toggle, so an alarm cannot promise the unit ends up on.
+ */
+export const ALARM_CAVEAT =
+  'Alarms send a command at a time — they cannot guarantee the unit ends up on or off. /Power is a toggle, so if the air conditioner is already running when a Power alarm fires, it switches off instead.';

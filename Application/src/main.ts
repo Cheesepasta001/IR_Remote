@@ -2,24 +2,24 @@
  * Frontend entry. This is a view (Instruction.md section 5).
  *
  * It never constructs a URL, never holds a credential, and never decides retry
- * policy. It dispatches intents over Tauri IPC and renders whatever the core
- * emits. The password field below is write-only: it goes into the core, and the
- * core puts it in the OS keychain. Nothing reads one back.
+ * or scheduling policy. It dispatches intents over Tauri IPC and renders
+ * whatever the core emits. The password field is write-only: it goes into the
+ * core, and the core puts it in the OS keychain. Nothing reads one back.
  */
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 
-import { COMMANDS, type Command, type LogEntry, type Snapshot } from './types';
+import { COMMANDS, type Command, type Snapshot } from './types';
 import {
+  ALARM_CAVEAT,
   NO_STATE_CAVEAT,
+  alarmLineFor,
   bannerFor,
-  cancelEnabled,
   controlStatusFor,
   deviceLineFor,
-  logLine,
+  parseClock,
   reage,
-  toneForLog,
 } from './ui/present';
 
 const $ = <T extends HTMLElement>(id: string): T => {
@@ -29,18 +29,17 @@ const $ = <T extends HTMLElement>(id: string): T => {
 };
 
 let snapshot: Snapshot | null = null;
-let entries: LogEntry[] = [];
 /** Settings inputs are not overwritten while the user is editing them. */
 let settingsDirty = false;
+/** Last offset sent to the core, so we only re-send when it actually changes. */
+let sentTzOffset: number | null = null;
 
 // ------------------------------------------------------------- render ----
 
 function renderBanner(s: Snapshot) {
   const b = bannerFor(s);
-  const el = $('banner');
-  el.className = `banner tone-${b.tone}`;
+  $('banner').className = `banner tone-${b.tone}`;
   $('banner-label').textContent = b.label;
-  $('banner-detail').textContent = b.detail;
 }
 
 function renderDevice(s: Snapshot) {
@@ -63,7 +62,6 @@ function renderControls(s: Snapshot) {
     for (const c of COMMANDS) {
       const b = document.createElement('button');
       b.dataset.command = c.id;
-      b.innerHTML = `${c.label}<span class="sub">${c.path}</span>`;
       b.addEventListener('click', () => dispatch(c.id));
       host.appendChild(b);
     }
@@ -71,12 +69,12 @@ function renderControls(s: Snapshot) {
 
   for (const el of Array.from(host.children) as HTMLButtonElement[]) {
     const id = el.dataset.command as Command;
-    const status = controlStatusFor(s, id);
     const def = COMMANDS.find((c) => c.id === id)!;
+    const status = controlStatusFor(s, id);
 
     el.classList.toggle('pending', status === 'pending');
     // Only an in-flight command gates the others. Being disconnected does not:
-    // the user may still try, and the attempt is logged either way.
+    // the user may still try, and the attempt is recorded either way.
     el.disabled = status === 'blocked';
     el.innerHTML =
       status === 'pending'
@@ -85,40 +83,66 @@ function renderControls(s: Snapshot) {
   }
 }
 
-function renderCancel(s: Snapshot) {
-  // Rule 6: never disabled, in any state.
-  const btn = $<HTMLButtonElement>('cancel');
-  btn.disabled = !cancelEnabled(s);
-
-  $('cancel-note').textContent =
-    'Cancels this app’s in-flight request. It does NOT switch the air conditioner off — the API exposes no safe off, and /Power is a toggle.';
-}
-
-function renderLog() {
-  const host = $('log');
+function renderAlarms(s: Snapshot) {
+  const host = $('alarms');
   host.replaceChildren();
 
-  if (entries.length === 0) {
-    const p = document.createElement('div');
-    p.className = 'empty';
-    p.textContent = 'no requests yet';
+  if (s.alarms.length === 0) {
+    const p = document.createElement('p');
+    p.className = 'caveat';
+    p.textContent = 'No alarms set.';
     host.appendChild(p);
-  } else {
-    for (const e of entries) {
-      const row = document.createElement('div');
-      row.className = `tone-${toneForLog(e.kind)}`;
-      row.textContent = logLine(e);
-      host.appendChild(row);
-    }
   }
 
-  $('log-count').textContent = `${entries.length}/100`;
-  host.scrollTop = host.scrollHeight;
+  for (const a of s.alarms) {
+    const line = alarmLineFor(a);
+
+    const row = document.createElement('div');
+    row.className = `alarm-row${a.enabled ? '' : ' off'}`;
+
+    const time = document.createElement('span');
+    time.className = 'alarm-time';
+    time.textContent = line.time;
+
+    const body = document.createElement('div');
+    body.className = 'alarm-body';
+    const action = document.createElement('span');
+    action.className = 'alarm-action';
+    action.textContent = line.action;
+    const status = document.createElement('span');
+    status.className = `alarm-status tone-${line.tone}`;
+    status.textContent = `${line.next} · ${line.status}`;
+    body.append(action, status);
+
+    const toggle = document.createElement('button');
+    toggle.className = 'alarm-toggle';
+    toggle.textContent = a.enabled ? 'On' : 'Off';
+    toggle.setAttribute('aria-pressed', String(a.enabled));
+    toggle.addEventListener('click', () => setAlarmEnabled(a.id, !a.enabled));
+
+    const remove = document.createElement('button');
+    remove.className = 'alarm-remove';
+    remove.textContent = '✕';
+    remove.title = 'Delete alarm';
+    remove.addEventListener('click', () => removeAlarm(a.id));
+
+    row.append(time, body, toggle, remove);
+    host.appendChild(row);
+  }
+
+  $('alarm-caveat').textContent = ALARM_CAVEAT;
 }
 
 function renderSettings(s: Snapshot) {
+  $('base-url-value').textContent = s.baseUrl;
+  $('base-url-note').textContent =
+    s.baseUrlSource === 'dotEnv'
+      ? 'Read from the .env file at startup. Edit .env and restart to point at a different device.'
+      : s.baseUrlSource === 'environment'
+        ? 'Read from the IR_REMOTE_BASE_URL environment variable, which overrides .env.'
+        : 'No IR_REMOTE_BASE_URL set in the environment or .env — this is the built-in mock address.';
+
   if (settingsDirty) return;
-  $<HTMLInputElement>('base-url').value = s.baseUrl;
   $<HTMLInputElement>('poll-interval').value = String(s.pollIntervalMs);
   $<HTMLInputElement>('command-timeout').value = String(s.commandTimeoutMs);
   $<HTMLInputElement>('probe-timeout').value = String(s.probeTimeoutMs);
@@ -136,8 +160,9 @@ function render() {
   renderBanner(s);
   renderDevice(s);
   renderControls(s);
-  renderCancel(s);
+  renderAlarms(s);
   renderSettings(s);
+  syncTzOffset();
 }
 
 // ------------------------------------------------------------ intents ----
@@ -146,24 +171,64 @@ async function dispatch(command: Command) {
   try {
     await invoke('send_command', { command });
   } catch {
-    // The core has already logged the failure and moved the state machine.
+    // The core has already recorded the failure and moved the state machine.
     // Nothing to add here; never surface it as a value change.
   }
 }
 
-async function cancel() {
-  try {
-    await invoke('abort');
-  } catch {
-    /* the cancel path must never throw at the user */
+async function addAlarm(e: Event) {
+  e.preventDefault();
+  const error = $('alarm-error');
+  error.textContent = '';
+
+  const clock = parseClock($<HTMLInputElement>('alarm-time').value);
+  if (!clock) {
+    error.textContent = 'Enter a time as HH:MM.';
+    return;
   }
+  const command = $<HTMLSelectElement>('alarm-command').value as Command;
+
+  try {
+    await invoke('add_alarm', { hour: clock.hour, minute: clock.minute, command });
+  } catch (err) {
+    error.textContent = String(err);
+  }
+}
+
+async function setAlarmEnabled(id: number, enabled: boolean) {
+  try {
+    await invoke('set_alarm_enabled', { id, enabled });
+  } catch (err) {
+    $('alarm-error').textContent = String(err);
+  }
+}
+
+async function removeAlarm(id: number) {
+  try {
+    await invoke('remove_alarm', { id });
+  } catch (err) {
+    $('alarm-error').textContent = String(err);
+  }
+}
+
+/**
+ * Tell the core our UTC offset so it can schedule in local time. Rust's
+ * standard library has no timezone database. This is environment data the view
+ * happens to know — the scheduling itself stays in the core.
+ */
+function syncTzOffset() {
+  const minutes = -new Date().getTimezoneOffset();
+  if (minutes === sentTzOffset) return;
+  sentTzOffset = minutes;
+  void invoke('set_tz_offset', { minutes }).catch(() => {
+    sentTzOffset = null; // let it retry on the next tick
+  });
 }
 
 async function applySettings(e: Event) {
   e.preventDefault();
   try {
     await invoke('update_settings', {
-      baseUrl: $<HTMLInputElement>('base-url').value.trim(),
       pollIntervalMs: Number($<HTMLInputElement>('poll-interval').value),
       commandTimeoutMs: Number($<HTMLInputElement>('command-timeout').value),
       probeTimeoutMs: Number($<HTMLInputElement>('probe-timeout').value),
@@ -191,29 +256,39 @@ async function saveCredentials(e: Event) {
   }
 }
 
+function toggleSettings() {
+  const panel = $('settings-panel');
+  const button = $('settings-toggle');
+  const open = panel.hidden;
+  panel.hidden = !open;
+  button.setAttribute('aria-expanded', String(open));
+  button.classList.toggle('active', open);
+}
+
 // --------------------------------------------------------------- boot ----
 
 async function boot() {
-  $('cancel').addEventListener('click', cancel);
+  $('settings-toggle').addEventListener('click', toggleSettings);
   $('settings').addEventListener('submit', applySettings);
   $('creds').addEventListener('submit', saveCredentials);
+  $('alarm-form').addEventListener('submit', addAlarm);
   $('cred-clear').addEventListener('click', async () => {
     await invoke('clear_credentials', {
       username: $<HTMLInputElement>('cred-user').value.trim(),
     }).catch(() => undefined);
   });
 
-  for (const id of ['base-url', 'poll-interval', 'command-timeout', 'probe-timeout', 'stale-after']) {
+  for (const id of ['poll-interval', 'command-timeout', 'probe-timeout', 'stale-after']) {
     $(id).addEventListener('input', () => {
       settingsDirty = true;
     });
   }
 
-  // Section 6: Esc triggers the cancel control. No other shortcuts.
+  // Esc closes the settings panel. No other shortcuts.
   window.addEventListener('keydown', (ev) => {
-    if (ev.key === 'Escape') {
+    if (ev.key === 'Escape' && !$('settings-panel').hidden) {
       ev.preventDefault();
-      void cancel();
+      toggleSettings();
     }
   });
 
@@ -222,15 +297,9 @@ async function boot() {
     render();
   });
 
-  await listen<LogEntry>('log', (ev) => {
-    entries = [...entries, ev.payload].slice(-100);
-    renderLog();
-  });
-
+  syncTzOffset();
   snapshot = await invoke<Snapshot>('get_snapshot');
-  entries = await invoke<LogEntry[]>('get_log');
   render();
-  renderLog();
 
   // Rule 2: keep ages counting between snapshots so a value visibly goes stale
   // instead of freezing at whatever it said when the device stopped answering.

@@ -100,9 +100,17 @@ for (const [, name, ret] of returns) {
   if (/Credentials/.test(r)) {
     fail(`IPC command ${name} returns ${r} - a credential must never cross IPC`);
   }
-  if (/\bString\b/.test(r) && !/Result<\(\)\s*,\s*String>/.test(r) && !/Vec</.test(r)) {
-    // Result<(), String> is an error channel, which is fine. A bare String is not.
-    fail(`IPC command ${name} returns ${r} - check it cannot carry a secret`);
+
+  // Only the SUCCESS type can carry data back to the view. The error arm of a
+  // Result is a message channel and is expected to be String.
+  const result = /^Result\s*<\s*([\s\S]+?)\s*,\s*[^,]+>$/.exec(r);
+  const success = (result ? result[1] : r).trim();
+
+  if (/\bString\b/.test(success)) {
+    fail(
+      `IPC command ${name} returns ${r} - its success type ${success} is a String, ` +
+        'which could carry a secret',
+    );
   }
 }
 

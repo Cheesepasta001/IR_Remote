@@ -1,17 +1,25 @@
 #!/usr/bin/env node
-'use strict';
+
 /*
  * Mock ESP32 IR blaster - see Instruction.md section 7.
  *
- * This file is the executable contract. The real firmware (Main/Main.ino) does
- * not yet match it: as of this writing it handles only GET /Power and writes no
- * HTTP response at all. Mode "silent" below reproduces that exact behaviour so
- * the app can be tested against what the device really does today.
+ * This file is the executable contract. The real firmware (Main/Main.ino) now
+ * serves all four commands and writes a reply, but that reply is a bare
+ * `client.println("success")` - no status line, no headers, no blank line - so
+ * it is not an HTTP response and no HTTP client can read it.
+ *
+ * Three modes reproduce the firmware at each stage, so the app can be tested
+ * against the real device's behaviour without leaving your desk:
+ *   raw     - what Main.ino does today: a bare line, no framing, socket held open
+ *   plain   - once it sends headers, with the same bare `success` body
+ *   normal  - the full JSON contract, if the reply grows a command name too
+ *   silent  - the older firmware, which replied nothing at all
  *
  * No dependencies. Node >= 18.
  */
 
-const http = require('http');
+// ESM, because package.json sets "type": "module".
+import http from 'node:http';
 
 // ---------------------------------------------------------------- config ----
 
@@ -32,7 +40,19 @@ const AUTH_PASS = arg('pass', 'secret');
 
 // ----------------------------------------------------------------- state ----
 
-const MODES = ['normal', 'slow', 'refuse', 'malformed', 'silent', '401', '500', '503'];
+const MODES = [
+  'normal',   // the agreed JSON contract
+  'plain',    // valid HTTP, but a bare 'success' body - Main.ino once it sends headers
+  'plainfail',// valid HTTP, bare 'fail' body
+  'raw',      // NO HTTP framing at all - Main.ino exactly as it stands today
+  'slow',
+  'refuse',
+  'malformed',
+  'silent',
+  '401',
+  '500',
+  '503',
+];
 
 const state = {
   mode: arg('mode', 'normal'),
@@ -89,8 +109,18 @@ function handleDevice(req, res) {
   const id = state.requests;
   log('--> #' + id + ' ' + req.method + ' ' + path + ' (mode=' + state.mode + ')');
 
-  // "silent" reproduces the current firmware: fire and never reply. The socket
-  // is held open exactly as Main.ino holds it, so the client must time out.
+  // "raw" reproduces Main.ino as it stands: client.println("success") writes a
+  // bare line with no status line, no headers and no blank line, and the
+  // firmware never calls client.stop(). Writing straight to the socket bypasses
+  // node's HTTP layer, which is the whole point.
+  if (state.mode === 'raw') {
+    log('    #' + id + ' <-- raw bare line (no HTTP framing), socket left open');
+    req.socket.write('success\r\n');
+    return; // deliberately no res.end() and no socket close
+  }
+
+  // "silent" reproduces the older firmware: fire and never reply. The socket
+  // is held open exactly as Main.ino held it, so the client must time out.
   if (state.mode === 'silent') {
     log('    #' + id + ' holding socket open, sending no response (firmware behaviour)');
     return; // deliberately no res.end()
@@ -108,6 +138,17 @@ function handleDevice(req, res) {
 }
 
 function respond(req, res, path, id) {
+  if (state.mode === 'plain' || state.mode === 'plainfail') {
+    const body = state.mode === 'plain' ? 'success\r\n' : 'fail\r\n';
+    res.writeHead(200, {
+      'Content-Type': 'text/plain',
+      'Content-Length': Buffer.byteLength(body),
+      Connection: 'close',
+    });
+    log('    #' + id + ' <-- 200 text/plain ' + JSON.stringify(body));
+    return res.end(body);
+  }
+
   if (state.mode === 'malformed') {
     res.writeHead(200, { 'Content-Type': 'application/json', Connection: 'close' });
     log('    #' + id + ' <-- 200 malformed JSON');
