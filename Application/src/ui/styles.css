@@ -26,10 +26,20 @@ body {
 main {
   max-width: 860px;
   margin: 0 auto;
-  padding: 20px 20px 48px;
   display: flex;
   flex-direction: column;
   gap: 14px;
+
+  /*
+   * Android runs this edge to edge (MainActivity calls enableEdgeToEdge), so
+   * without the safe-area insets the banner sits underneath the status bar and
+   * the last card sits under the gesture pill. env() is zero on desktop, where
+   * max() then just picks the normal padding.
+   */
+  padding-top: max(20px, env(safe-area-inset-top));
+  padding-bottom: max(48px, calc(env(safe-area-inset-bottom) + 24px));
+  padding-left: max(20px, env(safe-area-inset-left));
+  padding-right: max(20px, env(safe-area-inset-right));
 }
 
 h1 {
@@ -426,8 +436,32 @@ h2 {
  */
 @media (max-width: 560px) {
   main {
-    padding: 12px 12px 32px;
     gap: 10px;
+    padding-top: max(12px, env(safe-area-inset-top));
+    padding-bottom: max(32px, calc(env(safe-area-inset-bottom) + 16px));
+    padding-left: max(12px, env(safe-area-inset-left));
+    padding-right: max(12px, env(safe-area-inset-right));
+  }
+
+  /* The explanatory text earns less room on a phone than on a desktop. */
+  .caveat {
+    font-size: 11px;
+    margin-top: 8px;
+  }
+
+  .device-label {
+    font-size: 16px;
+  }
+
+  /* Time and command side by side; the action gets its own full-width row. */
+  .alarm-form {
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+
+  .alarm-form button {
+    grid-column: 1 / -1;
   }
 
   h1 {
@@ -448,24 +482,36 @@ h2 {
     padding: 18px 8px; /* a comfortable tap target */
   }
 
-  .alarm-form,
   .settings {
     grid-template-columns: 1fr;
   }
 
-  /* The time and the action stack; the toggle and delete stay on the right. */
+  /*
+   * Keep the row on one line. Wrapping the action onto its own line left the
+   * toggle and delete stranded beside the time with a wide dead gap.
+   */
   .alarm-row {
-    flex-wrap: wrap;
-    gap: 8px 10px;
-  }
-
-  .alarm-body {
-    flex-basis: 100%;
-    order: 3;
+    gap: 10px;
   }
 
   .alarm-time {
-    font-size: 24px;
+    font-size: 19px;
+    min-width: 52px;
+  }
+
+  /* min-width:0 lets the text shrink rather than shove the buttons out. */
+  .alarm-body {
+    min-width: 0;
+  }
+
+  .alarm-action,
+  .alarm-status {
+    overflow-wrap: anywhere;
+  }
+
+  .alarm-toggle,
+  .alarm-remove {
+    padding: 10px 14px;
   }
 
   .alarm-toggle,

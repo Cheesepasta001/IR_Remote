@@ -2,7 +2,10 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- viewport-fit=cover is required for env(safe-area-inset-*) to be non-zero.
+         MainActivity calls enableEdgeToEdge(), so without it the banner renders
+         underneath the status bar. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>IR Remote</title>
     <link rel="stylesheet" href="/src/ui/styles.css" />
   </head>

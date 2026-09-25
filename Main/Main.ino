@@ -15,6 +15,10 @@ const uint16_t IR_LED_PIN = 14; // your GPIO
 IRsend irsend(IR_LED_PIN);
 NetworkServer server(80);
 NetworkClient client;
+IPAddress local_IP(LOCALIP); 
+IPAddress gateway(GATEWAY);   
+IPAddress subnet(SUBNET);
+IPAddress primaryDNS(pDNS);
 
 
 void socketSuccessHandler(int instance){
@@ -73,6 +77,7 @@ void silentButton(){
 void setup() {
   Serial.begin(115200);
   // Connect to the wifi
+  //WiFi.config(local_IP, gateway, subnet, primaryDNS);
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
 

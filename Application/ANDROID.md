@@ -73,10 +73,25 @@ IR_REMOTE_BASE_URL=http://192.168.0.102 npx tauri android build --debug --target
 cp -f src-tauri/target/aarch64-linux-android/debug/libir_remote_lib.so \
       src-tauri/gen/android/app/src/main/jniLibs/arm64-v8a/libir_remote_lib.so
 
-# 3. Assemble, skipping the task that re-invokes the Tauri CLI.
+# 3. Strip debug symbols. WITHOUT THIS THE APK IS ~147 MB and will not even
+#    install on an emulator (INSTALL_FAILED_INSUFFICIENT_STORAGE). With it,
+#    ~20 MB. The debug build config asks Gradle to KEEP symbols, so this has
+#    to be done by hand.
+NDKBIN="$NDK_HOME/toolchains/llvm/prebuilt/windows-x86_64/bin"
+"$NDKBIN/llvm-strip.exe" --strip-unneeded   src-tauri/gen/android/app/src/main/jniLibs/arm64-v8a/libir_remote_lib.so
+
+# 4. Assemble, skipping the task that re-invokes the Tauri CLI.
 cd src-tauri/gen/android
-./gradlew assembleArm64Debug -x rustBuildArm64Debug
+./gradlew clean assembleArm64Debug -x rustBuildArm64Debug
 ```
+
+**Use `clean` when the library size changes.** Gradle rewrites the APK in place
+without truncating, so shrinking the `.so` can leave a ~130 MB dead tail on an
+otherwise correct 22 MB archive — the entries read fine but the file will not
+install. `clean` avoids it.
+
+For the emulator, substitute `x86_64` for `arm64`/`aarch64` throughout
+(`--target x86_64`, `jniLibs/x86_64`, `assembleX86_64Debug`).
 
 **Do not run `cargo build --target aarch64-linux-android` directly** — without
 the environment the Tauri CLI sets up, cargo picks the wrong `cc` and the link
@@ -92,7 +107,7 @@ overwrite those customisations.
 
 ---
 
-## Three things that are not the same as desktop
+## Four things that are not the same as desktop
 
 ### 1. The device address
 
@@ -120,7 +135,21 @@ worked** — a trap worth knowing about. It is enabled app-wide because the targ
 address is set at runtime, and Android's network security config keys on literal
 hostnames; it cannot express "any private LAN address".
 
-### 3. Alarms are handled by Android, not by the Rust scheduler
+### 3. The layout must handle edge-to-edge
+
+`MainActivity` calls `enableEdgeToEdge()`, so the webview fills the whole screen
+including behind the status bar and the gesture pill. The banner rendered
+*underneath* the clock until the CSS accounted for it. Two things are required
+together:
+
+- `viewport-fit=cover` in the viewport meta tag — without it `env(safe-area-inset-*)`
+  is always zero and the padding silently does nothing
+- `padding: max(20px, env(safe-area-inset-top))` and friends on `main`
+
+`env()` is zero on desktop, so `max()` just picks the normal padding there and
+one stylesheet serves both.
+
+### 4. Alarms are handled by Android, not by the Rust scheduler
 
 This is the significant one.
 
@@ -193,5 +222,6 @@ hardware from here.
       optimisation? These OEMs kill alarms that stock Android honours.
 - [ ] Is `SCHEDULE_EXACT_ALARM` granted on Android 13+? If not, alarms drift.
 - [ ] Does the saved address survive an app restart (`device.txt`)?
-- [ ] Layout on a real phone — the CSS is responsive but has only been reasoned
-      about, not seen at 375 px on a device.
+- [ ] Layout on YOUR phone. It has now been checked on an emulator at
+      1080x2400 / 420 dpi and fits on one screen, but notch and gesture-bar
+      geometry differ per device.
