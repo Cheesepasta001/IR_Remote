@@ -16,19 +16,19 @@ Blynk app  ──►  Blynk cloud  ──►  ESP32  ──►  IR LED  ──�
 
 ## What you need
 
-| | |
-|---|---|
-| Board | ESP32 dev board (built with `esp32:esp32:esp32`, core 3.3.11) |
-| Emitter | IR LED on **GPIO 14**, with a current-limiting resistor |
-| Account | A free [Blynk](https://blynk.cloud) account |
-| IDE | Arduino IDE, or `arduino-cli` |
+|         |                                                               |
+| ------- | ------------------------------------------------------------- |
+| Board   | ESP32 dev board (built with `esp32:esp32:esp32`, core 3.3.11) |
+| Emitter | IR LED on **GPIO 14**, with a current-limiting resistor       |
+| Account | A free [Blynk](https://blynk.cloud) account                   |
+| IDE     | Arduino IDE, or `arduino-cli`                                 |
 
 **Libraries** — install both from the Arduino Library Manager:
 
-| Library | Version built against |
-|---|---|
-| `Blynk` by Blynk | 1.3.5 |
-| `IRremoteESP8266` | 2.9.0 |
+| Library           | Version built against |
+| ----------------- | --------------------- |
+| `Blynk` by Blynk  | 1.3.5                 |
+| `IRremoteESP8266` | 2.9.0                 |
 
 An IR LED driven straight off a GPIO pin is dim and gives you maybe a metre of
 range. A transistor driver and a lower-value resistor will get you across a
@@ -43,14 +43,14 @@ room.
 Create a **template**, then add four **datastreams** — one per button. Each is a
 Virtual Pin, Integer, range 0–1:
 
-| Virtual pin | Datastream name | What the ESP32 does |
-|---|---|---|
-| **V0** | Power | toggles the unit on/off |
-| **V1** | Silent | silent / quiet mode |
-| **V2** | Temp + | temperature **up** |
-| **V3** | Temp − | temperature **down** |
+| Virtual pin | Datastream name | What the ESP32 does     |
+| ----------- | --------------- | ----------------------- |
+| **V0**      | Power           | toggles the unit on/off |
+| **V1**      | Silent          | silent / quiet mode     |
+| **V2**      | Temp +          | temperature **up**      |
+| **V3**      | Temp −          | temperature **down**    |
 
-> **Watch V2 and V3.** V2 is the temperature *increase* and V3 the *decrease*.
+> **Watch V2 and V3.** V2 is the temperature _increase_ and V3 the _decrease_.
 > They are easy to wire up the wrong way round in the console, and nothing will
 > complain — the buttons will just quietly do each other's job.
 
@@ -58,7 +58,7 @@ Then add four **Button** widgets on the web dashboard or mobile app, one bound
 to each datastream. Note the widget mode — see the trap below.
 
 Copy the **Template ID**, **Template Name** and **AuthToken** from the device's
-*Device Info* tab.
+_Device Info_ tab.
 
 ### 2. `Main/secret.h`
 
@@ -188,14 +188,14 @@ almost always the IR side.
 
 ## Troubleshooting
 
-| Symptom | Likely cause |
-|---|---|
-| Device shows offline in Blynk | Wrong SSID/password, or 5 GHz-only WiFi — ESP32 needs 2.4 GHz |
-| "Invalid token" | Token mistyped, or the device belongs to a different Blynk region |
-| Connects, but nothing happens | IR LED backwards, no resistor, out of range, or wrong IR protocol |
-| One press turns it on then off | Push-button widget firing twice — see the trap above |
-| Temp + cools, Temp − heats | V2 and V3 swapped in the console |
-| Works up close, not across the room | Bare GPIO drive; add a transistor |
+| Symptom                             | Likely cause                                                      |
+| ----------------------------------- | ----------------------------------------------------------------- |
+| Device shows offline in Blynk       | Wrong SSID/password, or 5 GHz-only WiFi — ESP32 needs 2.4 GHz     |
+| "Invalid token"                     | Token mistyped, or the device belongs to a different Blynk region |
+| Connects, but nothing happens       | IR LED backwards, no resistor, out of range, or wrong IR protocol |
+| One press turns it on then off      | Push-button widget firing twice — see the trap above              |
+| Temp + cools, Temp − heats          | V2 and V3 swapped in the console                                  |
+| Works up close, not across the room | Bare GPIO drive; add a transistor                                 |
 
 Serial monitor at 115200 is the first place to look — it prints a line for every
 code it sends, so you can tell a Blynk problem (no line) from an IR problem
@@ -211,17 +211,6 @@ Main/
   secret.h      WiFi + Blynk + IR codes — gitignored, create it yourself
 LICENSE         MIT
 ```
-
-### Housekeeping
-
-Two leftovers from an earlier version of this project, both safe to delete:
-
-- `package-lock.json` at the repo root — from a desktop/Android app that used to
-  drive the ESP32 over HTTP on the LAN. It was replaced by Blynk in `22daacc`.
-- `LOCALIP`, `GATEWAY`, `SUBNET` and `pDNS` in `secret.h` — these configured a
-  static IP back when the ESP32 ran its own web server. Nothing reads them now.
-
----
 
 ## License
 
